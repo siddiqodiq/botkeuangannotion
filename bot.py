@@ -4,7 +4,7 @@ import datetime
 import httpx
 from dotenv import load_dotenv
 from notion_client import Client
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -12,6 +12,7 @@ from telegram.ext import (
     filters,
     ContextTypes,
     ConversationHandler,
+    CallbackQueryHandler,
 )
 
 # Load .env variables
@@ -74,10 +75,13 @@ def is_for_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     return True
 
 async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not is_for_me(update, context):
-        return ConversationHandler.END
-
-    text = update.message.text.replace("/add", "").strip()
+    if update.callback_query:
+        await update.callback_query.answer()
+        text = ""
+    else:
+        if not is_for_me(update, context):
+            return ConversationHandler.END
+        text = update.message.text.replace("/add", "").strip()
     
     if text:
         # Check if there is a comma separating name and amount
@@ -265,25 +269,32 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     return ConversationHandler.END
 
-MAIN_KEYBOARD = ReplyKeyboardMarkup(
+MAIN_KEYBOARD = InlineKeyboardMarkup(
     [
-        ["➕ Tambah Transaksi", "📊 Laporan Bulan Ini"],
-        ["📋 Daftar Pengeluaran", "❓ Bantuan"]
-    ],
-    resize_keyboard=True
+        [
+            InlineKeyboardButton("➕ Tambah Transaksi", callback_data="menu_add"),
+            InlineKeyboardButton("📊 Laporan Bulan Ini", callback_data="menu_report")
+        ],
+        [
+            InlineKeyboardButton("📋 Daftar Pengeluaran", callback_data="menu_list"),
+            InlineKeyboardButton("❓ Bantuan", callback_data="menu_help")
+        ]
+    ]
 )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_for_me(update, context):
+    message = update.message if update.message else update.callback_query.message
+    if update.message and not is_for_me(update, context):
         return
     pesan = (
         "Halo King Odiq! 👋 Saya adalah Bot Keuangan Notion Anda.\n\n"
         "Silakan pilih menu di bawah ini untuk mulai mencatat atau melihat pengeluaran Anda."
     )
-    await update.message.reply_text(pesan, reply_markup=MAIN_KEYBOARD)
+    await message.reply_text(pesan, reply_markup=MAIN_KEYBOARD)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_for_me(update, context):
+    message = update.message if update.message else update.callback_query.message
+    if update.message and not is_for_me(update, context):
         return
     pesan = (
         "💡 *Panduan Penggunaan Bot untuk King Odiq*\n\n"
@@ -296,17 +307,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "   👉 *Bulan Spesifik:* `/list 5` (untuk bulan Mei)\n\n"
         "4️⃣ /cancel - Membatalkan proses pencatatan."
     )
-    await update.message.reply_text(pesan, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
+    await message.reply_text(pesan, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
 
-async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_for_me(update, context):
-        return
-    text = update.message.text
-    if text == "📊 Laporan Bulan Ini":
+async def handle_inline_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "menu_report":
         await report(update, context)
-    elif text == "📋 Daftar Pengeluaran":
+    elif query.data == "menu_list":
         await list_expenses(update, context)
-    elif text == "❓ Bantuan":
+    elif query.data == "menu_help":
         await help_command(update, context)
 
 
@@ -317,7 +328,8 @@ NAMA_BULAN = {
 }
 
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_for_me(update, context):
+    message = update.message if update.message else update.callback_query.message
+    if update.message and not is_for_me(update, context):
         return
     today = datetime.date.today()
     
@@ -327,14 +339,14 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         try:
             bulan = int(args[0])
             if bulan < 1 or bulan > 12:
-                await update.message.reply_text("⚠️ Bulan harus antara 1-12, King Odiq. Contoh: /report 5")
+                await message.reply_text("⚠️ Bulan harus antara 1-12, King Odiq. Contoh: /report 5")
                 return
             tahun = today.year
             # Jika bulan yang diminta lebih besar dari bulan sekarang, ambil tahun lalu
             if bulan > today.month:
                 tahun -= 1
         except ValueError:
-            await update.message.reply_text("⚠️ Format salah, King Odiq. Contoh: /report 5 (untuk Mei)")
+            await message.reply_text("⚠️ Format salah, King Odiq. Contoh: /report 5 (untuk Mei)")
             return
     else:
         bulan = today.month
@@ -348,7 +360,7 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         last_day_next = datetime.date(tahun, bulan + 1, 1).isoformat()
     
     label_bulan = f"{NAMA_BULAN[bulan]} {tahun}"
-    await update.message.reply_text(f"⏳ Sedang mengambil data laporan untuk King Odiq *{label_bulan}*...", parse_mode="Markdown")
+    await message.reply_text(f"⏳ Sedang mengambil data laporan untuk King Odiq *{label_bulan}*...", parse_mode="Markdown")
     
     url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
     headers = {
@@ -415,14 +427,15 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         pesan += f"📉 *Total Pengeluaran:* Rp {total_pengeluaran:,.0f}\n"
         pesan += f"💰 *Saldo:* Rp {saldo:,.0f}"
         
-        await update.message.reply_text(pesan, parse_mode="Markdown")
+        await message.reply_text(pesan, parse_mode="Markdown")
         
     except Exception as e:
-        await update.message.reply_text(f"❌ Terjadi kesalahan, King Odiq saat mengambil laporan:\n{e}")
+        await message.reply_text(f"❌ Terjadi kesalahan, King Odiq saat mengambil laporan:\n{e}")
 
 
 async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_for_me(update, context):
+    message = update.message if update.message else update.callback_query.message
+    if update.message and not is_for_me(update, context):
         return
     today = datetime.date.today()
     
@@ -431,13 +444,13 @@ async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         try:
             bulan = int(args[0])
             if bulan < 1 or bulan > 12:
-                await update.message.reply_text("⚠️ Bulan harus antara 1-12, King Odiq. Contoh: /list 5")
+                await message.reply_text("⚠️ Bulan harus antara 1-12, King Odiq. Contoh: /list 5")
                 return
             tahun = today.year
             if bulan > today.month:
                 tahun -= 1
         except ValueError:
-            await update.message.reply_text("⚠️ Format salah, King Odiq. Contoh: /list 5 (untuk Mei)")
+            await message.reply_text("⚠️ Format salah, King Odiq. Contoh: /list 5 (untuk Mei)")
             return
     else:
         bulan = today.month
@@ -450,7 +463,7 @@ async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         last_day_next = datetime.date(tahun, bulan + 1, 1).isoformat()
     
     label_bulan = f"{NAMA_BULAN[bulan]} {tahun}"
-    await update.message.reply_text(f"⏳ Mengambil daftar pengeluaran *{label_bulan}* untuk King Odiq...", parse_mode="Markdown")
+    await message.reply_text(f"⏳ Mengambil daftar pengeluaran *{label_bulan}* untuk King Odiq...", parse_mode="Markdown")
     
     url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
     headers = {
@@ -486,7 +499,7 @@ async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 next_cursor = data.get('next_cursor')
         
         if not results:
-            await update.message.reply_text(f"ℹ️ Belum ada pengeluaran di {label_bulan}, King Odiq.")
+            await message.reply_text(f"ℹ️ Belum ada pengeluaran di {label_bulan}, King Odiq.")
             return
         
         pesan = f"📋 *Daftar Pengeluaran {label_bulan}*\n\n"
@@ -521,12 +534,12 @@ async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # Telegram message limit is 4096 chars, split if needed
         if len(pesan) > 4096:
             for x in range(0, len(pesan), 4096):
-                await update.message.reply_text(pesan[x:x+4096], parse_mode="Markdown")
+                await message.reply_text(pesan[x:x+4096], parse_mode="Markdown")
         else:
-            await update.message.reply_text(pesan, parse_mode="Markdown")
+            await message.reply_text(pesan, parse_mode="Markdown")
         
     except Exception as e:
-        await update.message.reply_text(f"❌ Terjadi kesalahan, King Odiq:\n{e}")
+        await message.reply_text(f"❌ Terjadi kesalahan, King Odiq:\n{e}")
 
 
 # ------------------------------------------
@@ -538,7 +551,7 @@ if __name__ == '__main__':
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("add", start_add),
-            MessageHandler(filters.Regex("^➕ Tambah Transaksi$"), start_add)
+            CallbackQueryHandler(start_add, pattern="^menu_add$")
         ],
         states={
             NAMA: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_type)],
@@ -552,7 +565,7 @@ if __name__ == '__main__':
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(MessageHandler(filters.Regex("^(📊 Laporan Bulan Ini|📋 Daftar Pengeluaran|❓ Bantuan)$"), handle_menu))
+    app.add_handler(CallbackQueryHandler(handle_inline_menu, pattern="^menu_(report|list|help)$"))
     app.add_handler(CommandHandler("report", report))
     app.add_handler(CommandHandler("list", list_expenses))
     
