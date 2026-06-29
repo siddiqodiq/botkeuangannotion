@@ -333,7 +333,7 @@ async def handle_inline_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     if query.data == "menu_report":
         await report(update, context)
-    elif query.data == "menu_list":
+    elif query.data == "menu_list" or query.data.startswith("list_all_"):
         await list_expenses(update, context)
     elif query.data == "menu_help":
         await help_command(update, context)
@@ -455,24 +455,33 @@ async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     message = update.message if update.message else update.callback_query.message
     if update.message and not is_for_me(update, context):
         return
+        
     today = datetime.date.today()
+    query = update.callback_query
+    show_all = False
     
-    args = context.args
-    if args:
-        try:
-            bulan = int(args[0])
-            if bulan < 1 or bulan > 12:
-                await message.reply_text("⚠️ Bulan harus antara 1-12, King Odiq. Contoh: /list 5")
-                return
-            tahun = today.year
-            if bulan > today.month:
-                tahun -= 1
-        except ValueError:
-            await message.reply_text("⚠️ Format salah, King Odiq. Contoh: /list 5 (untuk Mei)")
-            return
+    if query and query.data.startswith("list_all_"):
+        parts = query.data.split("_")
+        bulan = int(parts[2])
+        tahun = int(parts[3])
+        show_all = True
     else:
-        bulan = today.month
-        tahun = today.year
+        args = context.args
+        if args:
+            try:
+                bulan = int(args[0])
+                if bulan < 1 or bulan > 12:
+                    await message.reply_text("⚠️ Bulan harus antara 1-12, King Odiq. Contoh: /list 5")
+                    return
+                tahun = today.year
+                if bulan > today.month:
+                    tahun -= 1
+            except ValueError:
+                await message.reply_text("⚠️ Format salah, King Odiq. Contoh: /list 5 (untuk Mei)")
+                return
+        else:
+            bulan = today.month
+            tahun = today.year
     
     first_day = datetime.date(tahun, bulan, 1).isoformat()
     if bulan == 12:
@@ -481,7 +490,7 @@ async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         last_day_next = datetime.date(tahun, bulan + 1, 1).isoformat()
     
     label_bulan = f"{NAMA_BULAN[bulan]} {tahun}"
-    await message.reply_text(f"⏳ Mengambil daftar pengeluaran *{label_bulan}* untuk King Odiq...", parse_mode="Markdown")
+    await message.reply_text(f"⏳ Mengambil daftar transaksi *{label_bulan}* untuk King Odiq...", parse_mode="Markdown")
     
     url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
     headers = {
@@ -493,8 +502,7 @@ async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "filter": {
             "and": [
                 {"property": "Tanggal", "date": {"on_or_after": first_day}},
-                {"property": "Tanggal", "date": {"before": last_day_next}},
-                {"property": "Ins (+)/Outs (-)", "number": {"less_than": 0}}
+                {"property": "Tanggal", "date": {"before": last_day_next}}
             ]
         },
         "sorts": [{"property": "Tanggal", "direction": "descending"}]
@@ -517,13 +525,16 @@ async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 next_cursor = data.get('next_cursor')
         
         if not results:
-            await message.reply_text(f"ℹ️ Belum ada pengeluaran di {label_bulan}, King Odiq.")
+            await message.reply_text(f"ℹ️ Belum ada transaksi di {label_bulan}, King Odiq.")
             return
         
-        pesan = f"📋 *Daftar Pengeluaran {label_bulan}*\n\n"
-        total = 0
+        pesan = f"📋 *Daftar Transaksi {label_bulan}*\n\n"
+        saldo_net = 0
         
-        for i, r in enumerate(results, 1):
+        # Determine items to show
+        items_to_show = results if show_all else results[:10]
+        
+        for i, r in enumerate(items_to_show, 1):
             p = r.get('properties', {})
             nama = ''
             title_list = p.get('Name', {}).get('title', [])
@@ -544,21 +555,35 @@ async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 except ValueError:
                     pass
             
-            total += abs(amt)
-            pesan += f"{i}. {nama} | Rp {abs(amt):,.0f} | {cat_name} | {tgl}\n"
+            sign_str = "+" if amt > 0 else "-"
+            pesan += f"{i}. {nama} | {sign_str}Rp {abs(amt):,.0f} | {cat_name} | {tgl}\n"
+            
+        for r in results:
+            amt = r.get('properties', {}).get('Ins (+)/Outs (-)', {}).get('number') or 0
+            saldo_net += amt
         
-        pesan += f"\n*Total:* Rp {total:,.0f} ({len(results)} transaksi)"
+        if not show_all and len(results) > 10:
+            pesan += f"\n_...dan {len(results) - 10} transaksi lainnya._"
+            
+        pesan += f"\n\n*Saldo Net:* Rp {saldo_net:,.0f} ({len(results)} transaksi)"
+        
+        reply_markup = None
+        if not show_all and len(results) > 10:
+            reply_markup = InlineKeyboardMarkup([[
+                InlineKeyboardButton("Tampilkan Semua Transaksi", callback_data=f"list_all_{bulan}_{tahun}")
+            ]])
         
         # Telegram message limit is 4096 chars, split if needed
         if len(pesan) > 4096:
             for x in range(0, len(pesan), 4096):
-                await message.reply_text(pesan[x:x+4096], parse_mode="Markdown")
+                # Only attach markup to the last message
+                is_last = (x + 4096) >= len(pesan)
+                await message.reply_text(pesan[x:x+4096], parse_mode="Markdown", reply_markup=reply_markup if is_last else None)
         else:
-            await message.reply_text(pesan, parse_mode="Markdown")
+            await message.reply_text(pesan, parse_mode="Markdown", reply_markup=reply_markup)
         
     except Exception as e:
         await message.reply_text(f"❌ Terjadi kesalahan, King Odiq:\n{e}")
-
 
 # ------------------------------------------
 # Jalankan Bot
@@ -589,7 +614,8 @@ if __name__ == '__main__':
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CallbackQueryHandler(handle_inline_menu, pattern="^menu_(report|list|help)$"))
+    app.add_handler(CallbackQueryHandler(handle_inline_menu, pattern="^(menu_(report|list|help)|list_all_.*)$"))
+    app.add_handler(CallbackQueryHandler(list_expenses, pattern="^list_all_"))
     app.add_handler(CommandHandler("report", report))
     app.add_handler(CommandHandler("list", list_expenses))
     
