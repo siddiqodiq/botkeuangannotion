@@ -234,10 +234,11 @@ async def save_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             f"💰 `{jumlah:,.0f}`\n"
             f"📂 {kategori_raw}\n"
             f"📅 {date}",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
+            reply_markup=MAIN_KEYBOARD
         )
     except Exception as e:
-        await update.message.reply_text(f"⚠️ Gagal menambahkan data.\n\nError: `{str(e)}`", parse_mode="Markdown")
+        await update.message.reply_text(f"⚠️ Gagal menambahkan data.\n\nError: `{str(e)}`", parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
         
     # Clear user data
     context.user_data.clear()
@@ -246,10 +247,49 @@ async def save_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
         "❌ Proses dibatalkan.", 
-        reply_markup=ReplyKeyboardRemove()
+        reply_markup=MAIN_KEYBOARD
     )
     context.user_data.clear()
     return ConversationHandler.END
+
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        ["➕ Tambah Transaksi", "📊 Laporan Bulan Ini"],
+        ["📋 Daftar Pengeluaran", "❓ Bantuan"]
+    ],
+    resize_keyboard=True
+)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    pesan = (
+        "Halo! 👋 Saya adalah Bot Keuangan Notion Anda.\n\n"
+        "Silakan pilih menu di bawah ini untuk mulai mencatat atau melihat pengeluaran Anda."
+    )
+    await update.message.reply_text(pesan, reply_markup=MAIN_KEYBOARD)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    pesan = (
+        "💡 *Panduan Penggunaan Bot*\n\n"
+        "Anda bisa menggunakan tombol menu di bawah atau mengetik perintah berikut:\n\n"
+        "1️⃣ /add - Memulai pencatatan transaksi secara interaktif.\n"
+        "   👉 *Cara Cepat:* `/add Makan siang, -25k`\n\n"
+        "2️⃣ /report - Melihat ringkasan pemasukan, pengeluaran, dan saldo.\n"
+        "   👉 *Bulan Spesifik:* `/report 5` (untuk bulan Mei)\n\n"
+        "3️⃣ /list - Melihat daftar semua transaksi secara rinci.\n"
+        "   👉 *Bulan Spesifik:* `/list 5` (untuk bulan Mei)\n\n"
+        "4️⃣ /cancel - Membatalkan proses pencatatan."
+    )
+    await update.message.reply_text(pesan, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
+
+async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = update.message.text
+    if text == "📊 Laporan Bulan Ini":
+        await report(update, context)
+    elif text == "📋 Daftar Pengeluaran":
+        await list_expenses(update, context)
+    elif text == "❓ Bantuan":
+        await help_command(update, context)
+
 
 NAMA_BULAN = {
     1: "Januari", 2: "Februari", 3: "Maret", 4: "April",
@@ -473,7 +513,10 @@ if __name__ == '__main__':
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("add", start_add)],
+        entry_points=[
+            CommandHandler("add", start_add),
+            MessageHandler(filters.Regex("^➕ Tambah Transaksi$"), start_add)
+        ],
         states={
             NAMA: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_type)],
             TIPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_amount)],
@@ -484,6 +527,9 @@ if __name__ == '__main__':
     )
     
     app.add_handler(conv_handler)
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(MessageHandler(filters.Regex("^(📊 Laporan Bulan Ini|📋 Daftar Pengeluaran|❓ Bantuan)$"), handle_menu))
     app.add_handler(CommandHandler("report", report))
     app.add_handler(CommandHandler("list", list_expenses))
     
