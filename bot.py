@@ -121,7 +121,7 @@ async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                     
                 context.user_data['jumlah'] = jumlah_float
                 
-                reply_markup = ReplyKeyboardMarkup(CATEGORY_KEYBOARD, one_time_keyboard=True, resize_keyboard=True, selective=True)
+                reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(cat, callback_data=f"cat_{cat}") for cat in row] for row in CATEGORY_KEYBOARD])
                 await message.reply_text(
                     f"Nama: *{nama}*\nJumlah: *{jumlah_float:,.0f}*\n\n"
                     "Pilih kategori transaksi, King Odiq:",
@@ -156,7 +156,12 @@ async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def ask_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['nama'] = update.message.text.strip()
     
-    reply_markup = ReplyKeyboardMarkup(TYPE_KEYBOARD, one_time_keyboard=True, resize_keyboard=True, selective=True)
+    reply_markup = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📉 Pengeluaran (-)", callback_data="tipe_pengeluaran"),
+            InlineKeyboardButton("📈 Pemasukan (+)", callback_data="tipe_pemasukan")
+        ]
+    ])
     await update.message.reply_text(
         f"Nama: *{context.user_data['nama']}*\n\n"
         "Pilih jenis transaksi ini, King Odiq:",
@@ -166,15 +171,21 @@ async def ask_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return TIPE
 
 async def ask_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    tipe_pilihan = update.message.text.strip()
+    query = update.callback_query
+    await query.answer()
+    tipe_pilihan_data = query.data
     
-    if tipe_pilihan not in ["📉 Pengeluaran (-)", "📈 Pemasukan (+)"]:
-        await update.message.reply_text("⚠️ Harap pilih jenis menggunakan tombol di bawah, King Odiq.")
+    if tipe_pilihan_data == "tipe_pengeluaran":
+        tipe_pilihan = "📉 Pengeluaran (-)"
+    elif tipe_pilihan_data == "tipe_pemasukan":
+        tipe_pilihan = "📈 Pemasukan (+)"
+    else:
+        await query.message.reply_text("⚠️ Harap pilih jenis menggunakan tombol di bawah, King Odiq.")
         return TIPE
         
     context.user_data['tipe'] = tipe_pilihan
     
-    await update.message.reply_text(
+    await query.message.reply_text(
         "Silakan masukkan **Jumlah Nominal**, King Odiq (contoh: 50000 atau 50k):",
         reply_markup=ForceReply(selective=True),
         parse_mode="Markdown"
@@ -204,7 +215,7 @@ async def ask_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         
     context.user_data['jumlah'] = jumlah_float
     
-    reply_markup = ReplyKeyboardMarkup(CATEGORY_KEYBOARD, one_time_keyboard=True, resize_keyboard=True, selective=True)
+    reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(cat, callback_data=f"cat_{cat}") for cat in row] for row in CATEGORY_KEYBOARD])
     await update.message.reply_text(
         f"Jumlah: *{jumlah_float:,.0f}*\n\n"
         "Pilih kategori transaksi, King Odiq:",
@@ -214,13 +225,16 @@ async def ask_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     return KATEGORI
 
 async def save_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    kategori_raw = update.message.text.strip()
+    query = update.callback_query
+    await query.answer()
+    
+    kategori_raw = query.data.replace("cat_", "")
     
     # Flatten CATEGORY_KEYBOARD array to check if the selection is valid
     valid_categories = [item for sublist in CATEGORY_KEYBOARD for item in sublist]
     
     if kategori_raw not in valid_categories:
-        await update.message.reply_text("⚠️ Kategori tidak valid, King Odiq. Harap pilih menggunakan tombol di bawah.")
+        await query.message.reply_text("⚠️ Kategori tidak valid, King Odiq. Harap pilih menggunakan tombol di bawah.")
         return KATEGORI
         
     # Get the actual Notion text string (stripping the emoji icon)
@@ -229,9 +243,9 @@ async def save_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # Gather data
     nama = context.user_data['nama']
     jumlah = context.user_data['jumlah']
-    date = update.message.date.date().isoformat()
+    date = query.message.date.date().isoformat()
     
-    await update.message.reply_text("⏳ Menyimpan data ke Notion, King Odiq...", reply_markup=ReplyKeyboardRemove())
+    await query.message.reply_text("⏳ Menyimpan data ke Notion, King Odiq...")
     
     try:
         # Create Notion item
@@ -246,7 +260,7 @@ async def save_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         
         sign = "📈" if jumlah > 0 else "📉"
-        await update.message.reply_text(
+        await query.message.reply_text(
             f"{sign} Data berhasil disimpan ke Notion, King Odiq!\n\n"
             f"🏷️ *{nama}*\n"
             f"💰 `{jumlah:,.0f}`\n"
@@ -256,11 +270,14 @@ async def save_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             reply_markup=MAIN_KEYBOARD
         )
     except Exception as e:
-        await update.message.reply_text(f"⚠️ Gagal menambahkan data, King Odiq.\n\nError: `{str(e)}`", parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
+        await query.message.reply_text(f"⚠️ Gagal menambahkan data, King Odiq.\n\nError: `{str(e)}`", parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
         
     # Clear user data
     context.user_data.clear()
     return ConversationHandler.END
+
+async def invalid_inline_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text("⚠️ Harap pilih opsi menggunakan **tombol di atas**, King Odiq.", parse_mode="Markdown")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
@@ -556,9 +573,15 @@ if __name__ == '__main__':
         ],
         states={
             NAMA: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_type)],
-            TIPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_amount)],
+            TIPE: [
+                CallbackQueryHandler(ask_amount, pattern="^tipe_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, invalid_inline_input)
+            ],
             JUMLAH: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_category)],
-            KATEGORI: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_transaction)]
+            KATEGORI: [
+                CallbackQueryHandler(save_transaction, pattern="^cat_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, invalid_inline_input)
+            ]
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
