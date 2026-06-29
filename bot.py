@@ -252,7 +252,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("⏳ Sedang mengambil data pengeluaran bulan ini...")
+    await update.message.reply_text("⏳ Sedang mengambil data laporan bulan ini...")
     
     first_day = datetime.date.today().replace(day=1).isoformat()
     
@@ -262,50 +262,59 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Notion-Version": "2022-06-28",
         "Content-Type": "application/json"
     }
+    # Ambil semua transaksi bulan ini tanpa filter minus
     payload = {
         "filter": {
-            "and": [
-                {
-                    "property": "Tanggal",
-                    "date": {
-                        "on_or_after": first_day
-                    }
-                },
-                {
-                    "property": "Ins (+)/Outs (-)",
-                    "number": {
-                        "less_than": 0
-                    }
-                }
-            ]
+            "property": "Tanggal",
+            "date": {
+                "on_or_after": first_day
+            }
         }
     }
     
     try:
+        results = []
+        has_more = True
+        next_cursor = None
+        
         async with httpx.AsyncClient() as client:
-            response = await client.post(url, headers=headers, json=payload, timeout=20.0)
-            response.raise_for_status()
-            results = response.json().get('results', [])
+            while has_more:
+                if next_cursor:
+                    payload["start_cursor"] = next_cursor
+                response = await client.post(url, headers=headers, json=payload, timeout=20.0)
+                response.raise_for_status()
+                data = response.json()
+                results.extend(data.get('results', []))
+                has_more = data.get('has_more', False)
+                next_cursor = data.get('next_cursor')
             
         cats = {}
-        total = 0
+        total_pengeluaran = 0
+        saldo = 0
+        
         for r in results:
             p = r.get('properties', {})
             amt = p.get('Ins (+)/Outs (-)', {}).get('number') or 0
-            c = p.get('Kategori', {}).get('select')
-            c_name = c.get('name') if c else 'Tanpa Kategori'
-            cats[c_name] = cats.get(c_name, 0) + abs(amt)
-            total += abs(amt)
+            saldo += amt
             
-        if not cats:
-            await update.message.reply_text("ℹ️ Belum ada pengeluaran di bulan ini.")
-            return
+            if amt < 0:
+                c = p.get('Kategori', {}).get('select')
+                c_name = c.get('name') if c else 'Tanpa Kategori'
+                cats[c_name] = cats.get(c_name, 0) + abs(amt)
+                total_pengeluaran += abs(amt)
             
-        pesan = f"📊 *Laporan Pengeluaran Bulan Ini*\n\n"
-        for cat, amt in sorted(cats.items(), key=lambda x: x[1], reverse=True):
-            pesan += f"▪️ {cat}: Rp {amt:,.0f}\n"
+        pesan = f"📊 *Laporan Keuangan Bulan Ini*\n\n"
         
-        pesan += f"\n*Total Pengeluaran:* Rp {total:,.0f}"
+        if cats:
+            pesan += "*Rincian Pengeluaran:*\n"
+            for cat, amt in sorted(cats.items(), key=lambda x: x[1], reverse=True):
+                pesan += f"▪️ {cat}: Rp {amt:,.0f}\n"
+            pesan += "\n"
+        else:
+            pesan += "ℹ️ Belum ada pengeluaran di bulan ini.\n\n"
+            
+        pesan += f"📉 *Total Pengeluaran:* Rp {total_pengeluaran:,.0f}\n"
+        pesan += f"💰 *Saldo:* Rp {saldo:,.0f}"
         
         await update.message.reply_text(pesan, parse_mode="Markdown")
         
