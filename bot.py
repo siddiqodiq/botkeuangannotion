@@ -251,10 +251,43 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     return ConversationHandler.END
 
+NAMA_BULAN = {
+    1: "Januari", 2: "Februari", 3: "Maret", 4: "April",
+    5: "Mei", 6: "Juni", 7: "Juli", 8: "Agustus",
+    9: "September", 10: "Oktober", 11: "November", 12: "Desember"
+}
+
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("⏳ Sedang mengambil data laporan bulan ini...")
+    today = datetime.date.today()
     
-    first_day = datetime.date.today().replace(day=1).isoformat()
+    # Cek apakah ada argumen bulan
+    args = context.args
+    if args:
+        try:
+            bulan = int(args[0])
+            if bulan < 1 or bulan > 12:
+                await update.message.reply_text("⚠️ Bulan harus antara 1-12. Contoh: /report 5")
+                return
+            tahun = today.year
+            # Jika bulan yang diminta lebih besar dari bulan sekarang, ambil tahun lalu
+            if bulan > today.month:
+                tahun -= 1
+        except ValueError:
+            await update.message.reply_text("⚠️ Format salah. Contoh: /report 5 (untuk Mei)")
+            return
+    else:
+        bulan = today.month
+        tahun = today.year
+    
+    first_day = datetime.date(tahun, bulan, 1).isoformat()
+    # Hitung hari pertama bulan berikutnya sebagai batas akhir
+    if bulan == 12:
+        last_day_next = datetime.date(tahun + 1, 1, 1).isoformat()
+    else:
+        last_day_next = datetime.date(tahun, bulan + 1, 1).isoformat()
+    
+    label_bulan = f"{NAMA_BULAN[bulan]} {tahun}"
+    await update.message.reply_text(f"⏳ Sedang mengambil data laporan *{label_bulan}*...", parse_mode="Markdown")
     
     url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
     headers = {
@@ -262,13 +295,18 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Notion-Version": "2022-06-28",
         "Content-Type": "application/json"
     }
-    # Ambil semua transaksi bulan ini tanpa filter minus
     payload = {
         "filter": {
-            "property": "Tanggal",
-            "date": {
-                "on_or_after": first_day
-            }
+            "and": [
+                {
+                    "property": "Tanggal",
+                    "date": {"on_or_after": first_day}
+                },
+                {
+                    "property": "Tanggal",
+                    "date": {"before": last_day_next}
+                }
+            ]
         }
     }
     
@@ -303,7 +341,7 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 cats[c_name] = cats.get(c_name, 0) + abs(amt)
                 total_pengeluaran += abs(amt)
             
-        pesan = f"📊 *Laporan Keuangan Bulan Ini*\n\n"
+        pesan = f"📊 *Laporan Keuangan {label_bulan}*\n\n"
         
         if cats:
             pesan += "*Rincian Pengeluaran:*\n"
@@ -320,6 +358,112 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
     except Exception as e:
         await update.message.reply_text(f"❌ Terjadi kesalahan saat mengambil laporan:\n{e}")
+
+
+async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    today = datetime.date.today()
+    
+    args = context.args
+    if args:
+        try:
+            bulan = int(args[0])
+            if bulan < 1 or bulan > 12:
+                await update.message.reply_text("⚠️ Bulan harus antara 1-12. Contoh: /list 5")
+                return
+            tahun = today.year
+            if bulan > today.month:
+                tahun -= 1
+        except ValueError:
+            await update.message.reply_text("⚠️ Format salah. Contoh: /list 5 (untuk Mei)")
+            return
+    else:
+        bulan = today.month
+        tahun = today.year
+    
+    first_day = datetime.date(tahun, bulan, 1).isoformat()
+    if bulan == 12:
+        last_day_next = datetime.date(tahun + 1, 1, 1).isoformat()
+    else:
+        last_day_next = datetime.date(tahun, bulan + 1, 1).isoformat()
+    
+    label_bulan = f"{NAMA_BULAN[bulan]} {tahun}"
+    await update.message.reply_text(f"⏳ Mengambil daftar pengeluaran *{label_bulan}*...", parse_mode="Markdown")
+    
+    url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "filter": {
+            "and": [
+                {"property": "Tanggal", "date": {"on_or_after": first_day}},
+                {"property": "Tanggal", "date": {"before": last_day_next}},
+                {"property": "Ins (+)/Outs (-)", "number": {"less_than": 0}}
+            ]
+        },
+        "sorts": [{"property": "Tanggal", "direction": "descending"}]
+    }
+    
+    try:
+        results = []
+        has_more = True
+        next_cursor = None
+        
+        async with httpx.AsyncClient() as client:
+            while has_more:
+                if next_cursor:
+                    payload["start_cursor"] = next_cursor
+                response = await client.post(url, headers=headers, json=payload, timeout=20.0)
+                response.raise_for_status()
+                data = response.json()
+                results.extend(data.get('results', []))
+                has_more = data.get('has_more', False)
+                next_cursor = data.get('next_cursor')
+        
+        if not results:
+            await update.message.reply_text(f"ℹ️ Belum ada pengeluaran di {label_bulan}.")
+            return
+        
+        pesan = f"📋 *Daftar Pengeluaran {label_bulan}*\n\n"
+        total = 0
+        
+        for i, r in enumerate(results, 1):
+            p = r.get('properties', {})
+            nama = ''
+            title_list = p.get('Name', {}).get('title', [])
+            if title_list:
+                nama = title_list[0].get('plain_text', '-')
+            
+            amt = p.get('Ins (+)/Outs (-)', {}).get('number') or 0
+            
+            cat = p.get('Kategori', {}).get('select')
+            cat_name = cat.get('name') if cat else '-'
+            
+            tanggal_raw = p.get('Tanggal', {}).get('date', {})
+            tgl = tanggal_raw.get('start', '-') if tanggal_raw else '-'
+            if tgl != '-':
+                try:
+                    dt = datetime.date.fromisoformat(tgl)
+                    tgl = dt.strftime('%d/%m')
+                except ValueError:
+                    pass
+            
+            total += abs(amt)
+            pesan += f"{i}. {nama} | Rp {abs(amt):,.0f} | {cat_name} | {tgl}\n"
+        
+        pesan += f"\n*Total:* Rp {total:,.0f} ({len(results)} transaksi)"
+        
+        # Telegram message limit is 4096 chars, split if needed
+        if len(pesan) > 4096:
+            for x in range(0, len(pesan), 4096):
+                await update.message.reply_text(pesan[x:x+4096], parse_mode="Markdown")
+        else:
+            await update.message.reply_text(pesan, parse_mode="Markdown")
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Terjadi kesalahan:\n{e}")
 
 
 # ------------------------------------------
@@ -341,6 +485,7 @@ if __name__ == '__main__':
     
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("report", report))
+    app.add_handler(CommandHandler("list", list_expenses))
     
     print("Bot Telegram Finance Tracker sedang berjalan...")
     
