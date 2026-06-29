@@ -3,7 +3,7 @@ import asyncio
 import datetime
 import httpx
 from dotenv import load_dotenv
-from notion_client import Client
+from notion_client import AsyncClient
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
@@ -23,7 +23,7 @@ NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 
 # Initialize Notion client
-notion = Client(auth=NOTION_TOKEN)
+notion = AsyncClient(auth=NOTION_TOKEN)
 
 # Define States
 NAMA, TIPE, JUMLAH, KATEGORI = range(4)
@@ -235,7 +235,7 @@ async def save_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     
     try:
         # Create Notion item
-        notion.pages.create(
+        await notion.pages.create(
             parent={"database_id": NOTION_DATABASE_ID},
             properties={
                 "Name": {"title": [{"text": {"content": nama}}]},
