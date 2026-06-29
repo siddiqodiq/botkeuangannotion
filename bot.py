@@ -1,5 +1,7 @@
 import os
 import asyncio
+import datetime
+import httpx
 from dotenv import load_dotenv
 from notion_client import Client
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
@@ -249,6 +251,68 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     return ConversationHandler.END
 
+async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text("⏳ Sedang mengambil data pengeluaran bulan ini...")
+    
+    first_day = datetime.date.today().replace(day=1).isoformat()
+    
+    url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "filter": {
+            "and": [
+                {
+                    "property": "Tanggal",
+                    "date": {
+                        "on_or_after": first_day
+                    }
+                },
+                {
+                    "property": "Ins (+)/Outs (-)",
+                    "number": {
+                        "less_than": 0
+                    }
+                }
+            ]
+        }
+    }
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, json=payload, timeout=20.0)
+            response.raise_for_status()
+            results = response.json().get('results', [])
+            
+        cats = {}
+        total = 0
+        for r in results:
+            p = r.get('properties', {})
+            amt = p.get('Ins (+)/Outs (-)', {}).get('number') or 0
+            c = p.get('Kategori', {}).get('select')
+            c_name = c.get('name') if c else 'Tanpa Kategori'
+            cats[c_name] = cats.get(c_name, 0) + abs(amt)
+            total += abs(amt)
+            
+        if not cats:
+            await update.message.reply_text("ℹ️ Belum ada pengeluaran di bulan ini.")
+            return
+            
+        pesan = f"📊 *Laporan Pengeluaran Bulan Ini*\n\n"
+        for cat, amt in sorted(cats.items(), key=lambda x: x[1], reverse=True):
+            pesan += f"▪️ {cat}: Rp {amt:,.0f}\n"
+        
+        pesan += f"\n*Total Pengeluaran:* Rp {total:,.0f}"
+        
+        await update.message.reply_text(pesan, parse_mode="Markdown")
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Terjadi kesalahan saat mengambil laporan:\n{e}")
+
+
 # ------------------------------------------
 # Jalankan Bot
 # ------------------------------------------
@@ -267,6 +331,7 @@ if __name__ == '__main__':
     )
     
     app.add_handler(conv_handler)
+    app.add_handler(CommandHandler("report", report))
     
     print("Bot Telegram Finance Tracker sedang berjalan...")
     
