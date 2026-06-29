@@ -3,8 +3,8 @@ import asyncio
 import datetime
 import httpx
 from dotenv import load_dotenv
-from notion_client import AsyncClient
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
+from notion_client import Client
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -23,7 +23,7 @@ NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 
 # Initialize Notion client
-notion = AsyncClient(auth=NOTION_TOKEN)
+notion = Client(auth=NOTION_TOKEN)
 
 # Define States
 NAMA, TIPE, JUMLAH, KATEGORI = range(4)
@@ -75,6 +75,7 @@ def is_for_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     return True
 
 async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    message = update.message if update.message else update.callback_query.message
     if update.callback_query:
         await update.callback_query.answer()
         text = ""
@@ -92,7 +93,7 @@ async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             
             # Check if it has + or -
             if not (jumlah_str.startswith("+") or jumlah_str.startswith("-")):
-                await update.message.reply_text("⚠️ Format salah, King Odiq! Jika menggunakan koma, sertakan + atau - pada nominal (contoh: /add Makan, -50k)")
+                await message.reply_text("⚠️ Format salah, King Odiq! Jika menggunakan koma, sertakan + atau - pada nominal (contoh: /add Makan, -50k)")
                 return ConversationHandler.END
                 
             context.user_data['nama'] = nama
@@ -120,8 +121,8 @@ async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                     
                 context.user_data['jumlah'] = jumlah_float
                 
-                reply_markup = ReplyKeyboardMarkup(CATEGORY_KEYBOARD, one_time_keyboard=True, resize_keyboard=True)
-                await update.message.reply_text(
+                reply_markup = ReplyKeyboardMarkup(CATEGORY_KEYBOARD, one_time_keyboard=True, resize_keyboard=True, selective=True)
+                await message.reply_text(
                     f"Nama: *{nama}*\nJumlah: *{jumlah_float:,.0f}*\n\n"
                     "Pilih kategori transaksi, King Odiq:",
                     reply_markup=reply_markup,
@@ -129,13 +130,13 @@ async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                 )
                 return KATEGORI
             except ValueError:
-                await update.message.reply_text("⚠️ Nominal tidak valid! Batalkan (/cancel) dan ulangi.")
+                await message.reply_text("⚠️ Nominal tidak valid! Batalkan (/cancel) dan ulangi.")
                 return ConversationHandler.END
         else:
             # Only Name is provided
             context.user_data['nama'] = text
-            reply_markup = ReplyKeyboardMarkup(TYPE_KEYBOARD, one_time_keyboard=True, resize_keyboard=True)
-            await update.message.reply_text(
+            reply_markup = ReplyKeyboardMarkup(TYPE_KEYBOARD, one_time_keyboard=True, resize_keyboard=True, selective=True)
+            await message.reply_text(
                 f"Nama: *{context.user_data['nama']}*\n\n"
                 "Pilih jenis transaksi ini, King Odiq:",
                 reply_markup=reply_markup,
@@ -144,11 +145,10 @@ async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             return TIPE
 
     # Normal flow if no arguments
-    message = update.message if update.message else update.callback_query.message
     await message.reply_text(
         "📝 Mari tambahkan transaksi baru.\n\n"
         "Silakan masukkan **Nama Transaksi**, King Odiq:",
-        reply_markup=ReplyKeyboardRemove(),
+        reply_markup=ForceReply(selective=True),
         parse_mode="Markdown"
     )
     return NAMA
@@ -156,7 +156,7 @@ async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def ask_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['nama'] = update.message.text.strip()
     
-    reply_markup = ReplyKeyboardMarkup(TYPE_KEYBOARD, one_time_keyboard=True, resize_keyboard=True)
+    reply_markup = ReplyKeyboardMarkup(TYPE_KEYBOARD, one_time_keyboard=True, resize_keyboard=True, selective=True)
     await update.message.reply_text(
         f"Nama: *{context.user_data['nama']}*\n\n"
         "Pilih jenis transaksi ini, King Odiq:",
@@ -176,7 +176,7 @@ async def ask_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     
     await update.message.reply_text(
         "Silakan masukkan **Jumlah Nominal**, King Odiq (contoh: 50000 atau 50k):",
-        reply_markup=ReplyKeyboardRemove(),
+        reply_markup=ForceReply(selective=True),
         parse_mode="Markdown"
     )
     return JUMLAH
@@ -204,7 +204,7 @@ async def ask_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         
     context.user_data['jumlah'] = jumlah_float
     
-    reply_markup = ReplyKeyboardMarkup(CATEGORY_KEYBOARD, one_time_keyboard=True, resize_keyboard=True)
+    reply_markup = ReplyKeyboardMarkup(CATEGORY_KEYBOARD, one_time_keyboard=True, resize_keyboard=True, selective=True)
     await update.message.reply_text(
         f"Jumlah: *{jumlah_float:,.0f}*\n\n"
         "Pilih kategori transaksi, King Odiq:",
@@ -235,7 +235,7 @@ async def save_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     
     try:
         # Create Notion item
-        await notion.pages.create(
+        notion.pages.create(
             parent={"database_id": NOTION_DATABASE_ID},
             properties={
                 "Name": {"title": [{"text": {"content": nama}}]},
