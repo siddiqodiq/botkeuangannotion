@@ -144,7 +144,8 @@ async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             return TIPE
 
     # Normal flow if no arguments
-    await update.message.reply_text(
+    message = update.message if update.message else update.callback_query.message
+    await message.reply_text(
         "📝 Mari tambahkan transaksi baru.\n\n"
         "Silakan masukkan **Nama Transaksi**, King Odiq:",
         reply_markup=ReplyKeyboardRemove(),
