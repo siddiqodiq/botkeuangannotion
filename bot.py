@@ -82,7 +82,9 @@ async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     else:
         if not is_for_me(update, context):
             return ConversationHandler.END
-        text = update.message.text.replace("/add", "").strip()
+        raw_text = update.message.text
+        parts = raw_text.split(maxsplit=1)
+        text = parts[1].strip() if len(parts) > 1 else ""
     
     if text:
         # Check if there is a comma separating name and amount
