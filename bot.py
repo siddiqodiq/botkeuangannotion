@@ -63,7 +63,20 @@ CATEGORY_MAPPING = {
     "👾 hutang": "👾hutang"
 }
 
+def is_for_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Helper untuk mencegah bot merespons command tanpa mention di grup."""
+    if update.message and update.message.chat.type != "private":
+        text = update.message.text or ""
+        bot_username = context.bot.username
+        # Jika di grup dan text tidak mengandung @username_bot, abaikan
+        if bot_username and f"@{bot_username.lower()}" not in text.lower():
+            return False
+    return True
+
 async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not is_for_me(update, context):
+        return ConversationHandler.END
+
     text = update.message.text.replace("/add", "").strip()
     
     if text:
@@ -75,7 +88,7 @@ async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             
             # Check if it has + or -
             if not (jumlah_str.startswith("+") or jumlah_str.startswith("-")):
-                await update.message.reply_text("⚠️ Format salah! Jika menggunakan koma, sertakan + atau - pada nominal (contoh: /add Makan, -50k)")
+                await update.message.reply_text("⚠️ Format salah, King Odiq! Jika menggunakan koma, sertakan + atau - pada nominal (contoh: /add Makan, -50k)")
                 return ConversationHandler.END
                 
             context.user_data['nama'] = nama
@@ -106,7 +119,7 @@ async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                 reply_markup = ReplyKeyboardMarkup(CATEGORY_KEYBOARD, one_time_keyboard=True, resize_keyboard=True)
                 await update.message.reply_text(
                     f"Nama: *{nama}*\nJumlah: *{jumlah_float:,.0f}*\n\n"
-                    "Pilih kategori transaksi:",
+                    "Pilih kategori transaksi, King Odiq:",
                     reply_markup=reply_markup,
                     parse_mode="Markdown"
                 )
@@ -120,7 +133,7 @@ async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             reply_markup = ReplyKeyboardMarkup(TYPE_KEYBOARD, one_time_keyboard=True, resize_keyboard=True)
             await update.message.reply_text(
                 f"Nama: *{context.user_data['nama']}*\n\n"
-                "Pilih jenis transaksi ini:",
+                "Pilih jenis transaksi ini, King Odiq:",
                 reply_markup=reply_markup,
                 parse_mode="Markdown"
             )
@@ -129,7 +142,7 @@ async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # Normal flow if no arguments
     await update.message.reply_text(
         "📝 Mari tambahkan transaksi baru.\n\n"
-        "Silakan masukkan **Nama Transaksi**:",
+        "Silakan masukkan **Nama Transaksi**, King Odiq:",
         reply_markup=ReplyKeyboardRemove(),
         parse_mode="Markdown"
     )
@@ -141,7 +154,7 @@ async def ask_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     reply_markup = ReplyKeyboardMarkup(TYPE_KEYBOARD, one_time_keyboard=True, resize_keyboard=True)
     await update.message.reply_text(
         f"Nama: *{context.user_data['nama']}*\n\n"
-        "Pilih jenis transaksi ini:",
+        "Pilih jenis transaksi ini, King Odiq:",
         reply_markup=reply_markup,
         parse_mode="Markdown"
     )
@@ -151,13 +164,13 @@ async def ask_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     tipe_pilihan = update.message.text.strip()
     
     if tipe_pilihan not in ["📉 Pengeluaran (-)", "📈 Pemasukan (+)"]:
-        await update.message.reply_text("⚠️ Harap pilih jenis menggunakan tombol di bawah.")
+        await update.message.reply_text("⚠️ Harap pilih jenis menggunakan tombol di bawah, King Odiq.")
         return TIPE
         
     context.user_data['tipe'] = tipe_pilihan
     
     await update.message.reply_text(
-        "Silakan masukkan **Jumlah Nominal** (contoh: 50000 atau 50k):",
+        "Silakan masukkan **Jumlah Nominal**, King Odiq (contoh: 50000 atau 50k):",
         reply_markup=ReplyKeyboardRemove(),
         parse_mode="Markdown"
     )
@@ -175,7 +188,7 @@ async def ask_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     try:
         jumlah_float = float(jumlah_text) * multiplier
     except ValueError:
-        await update.message.reply_text("⚠️ Nominal tidak valid! Harap masukkan angka (contoh: 50000 atau 50k):")
+        await update.message.reply_text("⚠️ Nominal tidak valid, King Odiq! Harap masukkan angka (contoh: 50000 atau 50k):")
         return JUMLAH
         
     # Set positive/negative based on type
@@ -189,7 +202,7 @@ async def ask_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     reply_markup = ReplyKeyboardMarkup(CATEGORY_KEYBOARD, one_time_keyboard=True, resize_keyboard=True)
     await update.message.reply_text(
         f"Jumlah: *{jumlah_float:,.0f}*\n\n"
-        "Pilih kategori transaksi:",
+        "Pilih kategori transaksi, King Odiq:",
         reply_markup=reply_markup,
         parse_mode="Markdown"
     )
@@ -202,7 +215,7 @@ async def save_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     valid_categories = [item for sublist in CATEGORY_KEYBOARD for item in sublist]
     
     if kategori_raw not in valid_categories:
-        await update.message.reply_text("⚠️ Kategori tidak valid. Harap pilih menggunakan tombol di bawah.")
+        await update.message.reply_text("⚠️ Kategori tidak valid, King Odiq. Harap pilih menggunakan tombol di bawah.")
         return KATEGORI
         
     # Get the actual Notion text string (stripping the emoji icon)
@@ -213,7 +226,7 @@ async def save_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     jumlah = context.user_data['jumlah']
     date = update.message.date.date().isoformat()
     
-    await update.message.reply_text("⏳ Menyimpan data ke Notion...", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text("⏳ Menyimpan data ke Notion, King Odiq...", reply_markup=ReplyKeyboardRemove())
     
     try:
         # Create Notion item
@@ -229,7 +242,7 @@ async def save_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         
         sign = "📈" if jumlah > 0 else "📉"
         await update.message.reply_text(
-            f"{sign} Data berhasil disimpan ke Notion!\n\n"
+            f"{sign} Data berhasil disimpan ke Notion, King Odiq!\n\n"
             f"🏷️ *{nama}*\n"
             f"💰 `{jumlah:,.0f}`\n"
             f"📂 {kategori_raw}\n"
@@ -238,7 +251,7 @@ async def save_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             reply_markup=MAIN_KEYBOARD
         )
     except Exception as e:
-        await update.message.reply_text(f"⚠️ Gagal menambahkan data.\n\nError: `{str(e)}`", parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text(f"⚠️ Gagal menambahkan data, King Odiq.\n\nError: `{str(e)}`", parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
         
     # Clear user data
     context.user_data.clear()
@@ -246,7 +259,7 @@ async def save_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
-        "❌ Proses dibatalkan.", 
+        "❌ Proses dibatalkan, King Odiq.", 
         reply_markup=MAIN_KEYBOARD
     )
     context.user_data.clear()
@@ -261,15 +274,19 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_for_me(update, context):
+        return
     pesan = (
-        "Halo! 👋 Saya adalah Bot Keuangan Notion Anda.\n\n"
+        "Halo King Odiq! 👋 Saya adalah Bot Keuangan Notion Anda.\n\n"
         "Silakan pilih menu di bawah ini untuk mulai mencatat atau melihat pengeluaran Anda."
     )
     await update.message.reply_text(pesan, reply_markup=MAIN_KEYBOARD)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_for_me(update, context):
+        return
     pesan = (
-        "💡 *Panduan Penggunaan Bot*\n\n"
+        "💡 *Panduan Penggunaan Bot untuk King Odiq*\n\n"
         "Anda bisa menggunakan tombol menu di bawah atau mengetik perintah berikut:\n\n"
         "1️⃣ /add - Memulai pencatatan transaksi secara interaktif.\n"
         "   👉 *Cara Cepat:* `/add Makan siang, -25k`\n\n"
@@ -282,6 +299,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(pesan, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
 
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_for_me(update, context):
+        return
     text = update.message.text
     if text == "📊 Laporan Bulan Ini":
         await report(update, context)
@@ -298,6 +317,8 @@ NAMA_BULAN = {
 }
 
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_for_me(update, context):
+        return
     today = datetime.date.today()
     
     # Cek apakah ada argumen bulan
@@ -306,14 +327,14 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         try:
             bulan = int(args[0])
             if bulan < 1 or bulan > 12:
-                await update.message.reply_text("⚠️ Bulan harus antara 1-12. Contoh: /report 5")
+                await update.message.reply_text("⚠️ Bulan harus antara 1-12, King Odiq. Contoh: /report 5")
                 return
             tahun = today.year
             # Jika bulan yang diminta lebih besar dari bulan sekarang, ambil tahun lalu
             if bulan > today.month:
                 tahun -= 1
         except ValueError:
-            await update.message.reply_text("⚠️ Format salah. Contoh: /report 5 (untuk Mei)")
+            await update.message.reply_text("⚠️ Format salah, King Odiq. Contoh: /report 5 (untuk Mei)")
             return
     else:
         bulan = today.month
@@ -327,7 +348,7 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         last_day_next = datetime.date(tahun, bulan + 1, 1).isoformat()
     
     label_bulan = f"{NAMA_BULAN[bulan]} {tahun}"
-    await update.message.reply_text(f"⏳ Sedang mengambil data laporan *{label_bulan}*...", parse_mode="Markdown")
+    await update.message.reply_text(f"⏳ Sedang mengambil data laporan untuk King Odiq *{label_bulan}*...", parse_mode="Markdown")
     
     url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
     headers = {
@@ -389,7 +410,7 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 pesan += f"▪️ {cat}: Rp {amt:,.0f}\n"
             pesan += "\n"
         else:
-            pesan += "ℹ️ Belum ada pengeluaran di bulan ini.\n\n"
+            pesan += "ℹ️ Belum ada pengeluaran di bulan ini, King Odiq.\n\n"
             
         pesan += f"📉 *Total Pengeluaran:* Rp {total_pengeluaran:,.0f}\n"
         pesan += f"💰 *Saldo:* Rp {saldo:,.0f}"
@@ -397,10 +418,12 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(pesan, parse_mode="Markdown")
         
     except Exception as e:
-        await update.message.reply_text(f"❌ Terjadi kesalahan saat mengambil laporan:\n{e}")
+        await update.message.reply_text(f"❌ Terjadi kesalahan, King Odiq saat mengambil laporan:\n{e}")
 
 
 async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_for_me(update, context):
+        return
     today = datetime.date.today()
     
     args = context.args
@@ -408,13 +431,13 @@ async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         try:
             bulan = int(args[0])
             if bulan < 1 or bulan > 12:
-                await update.message.reply_text("⚠️ Bulan harus antara 1-12. Contoh: /list 5")
+                await update.message.reply_text("⚠️ Bulan harus antara 1-12, King Odiq. Contoh: /list 5")
                 return
             tahun = today.year
             if bulan > today.month:
                 tahun -= 1
         except ValueError:
-            await update.message.reply_text("⚠️ Format salah. Contoh: /list 5 (untuk Mei)")
+            await update.message.reply_text("⚠️ Format salah, King Odiq. Contoh: /list 5 (untuk Mei)")
             return
     else:
         bulan = today.month
@@ -427,7 +450,7 @@ async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         last_day_next = datetime.date(tahun, bulan + 1, 1).isoformat()
     
     label_bulan = f"{NAMA_BULAN[bulan]} {tahun}"
-    await update.message.reply_text(f"⏳ Mengambil daftar pengeluaran *{label_bulan}*...", parse_mode="Markdown")
+    await update.message.reply_text(f"⏳ Mengambil daftar pengeluaran *{label_bulan}* untuk King Odiq...", parse_mode="Markdown")
     
     url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
     headers = {
@@ -463,7 +486,7 @@ async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 next_cursor = data.get('next_cursor')
         
         if not results:
-            await update.message.reply_text(f"ℹ️ Belum ada pengeluaran di {label_bulan}.")
+            await update.message.reply_text(f"ℹ️ Belum ada pengeluaran di {label_bulan}, King Odiq.")
             return
         
         pesan = f"📋 *Daftar Pengeluaran {label_bulan}*\n\n"
@@ -503,7 +526,7 @@ async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await update.message.reply_text(pesan, parse_mode="Markdown")
         
     except Exception as e:
-        await update.message.reply_text(f"❌ Terjadi kesalahan:\n{e}")
+        await update.message.reply_text(f"❌ Terjadi kesalahan, King Odiq:\n{e}")
 
 
 # ------------------------------------------
