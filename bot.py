@@ -74,6 +74,53 @@ def is_for_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
             return False
     return True
 
+async def process_quick_add(text: str, message, context: ContextTypes.DEFAULT_TYPE, error_example: str) -> int:
+    parts = [p.strip() for p in text.split(",", 1)]
+    nama = parts[0]
+    jumlah_str = parts[1]
+    
+    # Check if it has + or -
+    if not (jumlah_str.startswith("+") or jumlah_str.startswith("-")):
+        await message.reply_text(f"⚠️ Format salah, King Odiq! Jika menggunakan koma, sertakan + atau - pada nominal ({error_example})")
+        return ConversationHandler.END
+        
+    context.user_data['nama'] = nama
+    
+    # Determine type
+    if jumlah_str.startswith("-"):
+        context.user_data['tipe'] = "📉 Pengeluaran (-)"
+    else:
+        context.user_data['tipe'] = "📈 Pemasukan (+)"
+        
+    jumlah_text = jumlah_str.replace("+", "").replace("-", "").lower().replace("idr", "").replace("rp", "").replace(".", "")
+    
+    # Deteksi k
+    multiplier = 1
+    if jumlah_text.endswith("k"):
+        multiplier = 1000
+        jumlah_text = jumlah_text[:-1].strip()
+        
+    try:
+        jumlah_float = float(jumlah_text) * multiplier
+        if context.user_data['tipe'] == "📉 Pengeluaran (-)":
+            jumlah_float = -abs(jumlah_float)
+        else:
+            jumlah_float = abs(jumlah_float)
+            
+        context.user_data['jumlah'] = jumlah_float
+        
+        reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(cat, callback_data=f"cat_{cat}") for cat in row] for row in CATEGORY_KEYBOARD])
+        await message.reply_text(
+            f"Nama: *{nama}*\nJumlah: *{jumlah_float:,.0f}*\n\n"
+            "Pilih kategori transaksi, King Odiq:",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
+        return KATEGORI
+    except ValueError:
+        await message.reply_text("⚠️ Nominal tidak valid! Batalkan (/cancel) dan ulangi.")
+        return ConversationHandler.END
+
 async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     message = update.message if update.message else update.callback_query.message
     if update.callback_query:
@@ -89,51 +136,7 @@ async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if text:
         # Check if there is a comma separating name and amount
         if "," in text:
-            parts = [p.strip() for p in text.split(",", 1)]
-            nama = parts[0]
-            jumlah_str = parts[1]
-            
-            # Check if it has + or -
-            if not (jumlah_str.startswith("+") or jumlah_str.startswith("-")):
-                await message.reply_text("⚠️ Format salah, King Odiq! Jika menggunakan koma, sertakan + atau - pada nominal (contoh: /add Makan, -50k)")
-                return ConversationHandler.END
-                
-            context.user_data['nama'] = nama
-            
-            # Determine type
-            if jumlah_str.startswith("-"):
-                context.user_data['tipe'] = "📉 Pengeluaran (-)"
-            else:
-                context.user_data['tipe'] = "📈 Pemasukan (+)"
-                
-            jumlah_text = jumlah_str.replace("+", "").replace("-", "").lower().replace("idr", "").replace("rp", "").replace(".", "")
-            
-            # Deteksi k
-            multiplier = 1
-            if jumlah_text.endswith("k"):
-                multiplier = 1000
-                jumlah_text = jumlah_text[:-1].strip()
-                
-            try:
-                jumlah_float = float(jumlah_text) * multiplier
-                if context.user_data['tipe'] == "📉 Pengeluaran (-)":
-                    jumlah_float = -abs(jumlah_float)
-                else:
-                    jumlah_float = abs(jumlah_float)
-                    
-                context.user_data['jumlah'] = jumlah_float
-                
-                reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(cat, callback_data=f"cat_{cat}") for cat in row] for row in CATEGORY_KEYBOARD])
-                await message.reply_text(
-                    f"Nama: *{nama}*\nJumlah: *{jumlah_float:,.0f}*\n\n"
-                    "Pilih kategori transaksi, King Odiq:",
-                    reply_markup=reply_markup,
-                    parse_mode="Markdown"
-                )
-                return KATEGORI
-            except ValueError:
-                await message.reply_text("⚠️ Nominal tidak valid! Batalkan (/cancel) dan ulangi.")
-                return ConversationHandler.END
+            return await process_quick_add(text, message, context, "contoh: /add Makan, -50k")
         else:
             # Only Name is provided
             context.user_data['nama'] = text
@@ -156,7 +159,12 @@ async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return NAMA
 
 async def ask_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data['nama'] = update.message.text.strip()
+    text = update.message.text.strip()
+    
+    if "," in text:
+        return await process_quick_add(text, update.message, context, "contoh: Makan, -50k")
+        
+    context.user_data['nama'] = text
     
     reply_markup = InlineKeyboardMarkup([
         [
