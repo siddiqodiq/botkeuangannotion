@@ -304,8 +304,12 @@ MAIN_KEYBOARD = InlineKeyboardMarkup(
             InlineKeyboardButton("📊 Laporan Bulan Ini", callback_data="menu_report")
         ],
         [
-            InlineKeyboardButton("📋 Daftar Pengeluaran", callback_data="menu_list"),
-            InlineKeyboardButton("❓ Bantuan", callback_data="menu_help")
+            InlineKeyboardButton("📂 Laporan Kategori", callback_data="menu_reportcat"),
+            InlineKeyboardButton("📋 Daftar Pengeluaran", callback_data="menu_list")
+        ],
+        [
+            InlineKeyboardButton("❓ Bantuan", callback_data="menu_help"),
+            InlineKeyboardButton("❌ Batal", callback_data="menu_cancel")
         ]
     ]
 )
@@ -333,7 +337,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "   👉 *Bulan Spesifik:* `/report 5` (untuk bulan Mei)\n\n"
         "3️⃣ /list - Melihat daftar semua transaksi secara rinci.\n"
         "   👉 *Bulan Spesifik:* `/list 5` (untuk bulan Mei)\n\n"
-        "4️⃣ /cancel - Membatalkan proses pencatatan."
+        "4️⃣ /reportcat - Laporan per kategori.\n"
+        "   👉 *Bulan Spesifik:* `/reportcat 5` (untuk bulan Mei)\n\n"
+        "5️⃣ /cancel - Membatalkan proses pencatatan."
     )
     await message.reply_text(pesan, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
 
@@ -343,10 +349,14 @@ async def handle_inline_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     if query.data == "menu_report":
         await report(update, context)
+    elif query.data == "menu_reportcat":
+        await reportcat(update, context)
     elif query.data == "menu_list" or query.data.startswith("list_all_"):
         await list_expenses(update, context)
     elif query.data == "menu_help":
         await help_command(update, context)
+    elif query.data == "menu_cancel":
+        await query.message.reply_text("❌ Proses dibatalkan, King Odiq.", reply_markup=MAIN_KEYBOARD)
 
 
 NAMA_BULAN = {
@@ -459,6 +469,163 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
     except Exception as e:
         await message.reply_text(f"❌ Terjadi kesalahan, King Odiq saat mengambil laporan:\n{e}")
+
+
+async def reportcat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show category picker for filtered report."""
+    message = update.message if update.message else update.callback_query.message
+    if update.message and not is_for_me(update, context):
+        return
+    
+    today = datetime.date.today()
+    args = context.args
+    if args:
+        try:
+            bulan = int(args[0])
+            if bulan < 1 or bulan > 12:
+                await message.reply_text("⚠️ Bulan harus antara 1-12, King Odiq. Contoh: /reportcat 5")
+                return
+            tahun = today.year
+            if bulan > today.month:
+                tahun -= 1
+        except ValueError:
+            await message.reply_text("⚠️ Format salah, King Odiq. Contoh: /reportcat 5 (untuk Mei)")
+            return
+    else:
+        bulan = today.month
+        tahun = today.year
+    
+    label_bulan = f"{NAMA_BULAN[bulan]} {tahun}"
+    
+    # Build category inline keyboard with month/year encoded in callback_data
+    keyboard = []
+    for row in CATEGORY_KEYBOARD:
+        btn_row = []
+        for cat in row:
+            btn_row.append(InlineKeyboardButton(cat, callback_data=f"rcat_{bulan}_{tahun}_{cat}"))
+        keyboard.append(btn_row)
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await message.reply_text(
+        f"📊 *Laporan Per Kategori — {label_bulan}*\n\n"
+        "Pilih kategori yang ingin dilihat, King Odiq:",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+
+
+async def reportcat_result(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle category selection and show filtered report."""
+    query = update.callback_query
+    await query.answer()
+    message = query.message
+    
+    # Parse callback data: rcat_{bulan}_{tahun}_{kategori}
+    raw = query.data
+    # Format: rcat_6_2026_🍛 Makanan
+    prefix = "rcat_"
+    rest = raw[len(prefix):]  # e.g. "6_2026_🍛 Makanan"
+    parts = rest.split("_", 2)  # ["6", "2026", "🍛 Makanan"]
+    
+    if len(parts) < 3:
+        await message.reply_text("⚠️ Data tidak valid, King Odiq.")
+        return
+    
+    bulan = int(parts[0])
+    tahun = int(parts[1])
+    kategori_display = parts[2]  # e.g. "🍛 Makanan"
+    
+    # Map display name to Notion category name
+    kategori_notion = CATEGORY_MAPPING.get(kategori_display, kategori_display)
+    
+    label_bulan = f"{NAMA_BULAN[bulan]} {tahun}"
+    first_day = datetime.date(tahun, bulan, 1).isoformat()
+    if bulan == 12:
+        last_day_next = datetime.date(tahun + 1, 1, 1).isoformat()
+    else:
+        last_day_next = datetime.date(tahun, bulan + 1, 1).isoformat()
+    
+    await message.reply_text(
+        f"⏳ Mengambil data *{kategori_display}* untuk *{label_bulan}*...",
+        parse_mode="Markdown"
+    )
+    
+    url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "filter": {
+            "and": [
+                {"property": "Tanggal", "date": {"on_or_after": first_day}},
+                {"property": "Tanggal", "date": {"before": last_day_next}},
+                {"property": "Kategori", "select": {"equals": kategori_notion}}
+            ]
+        },
+        "sorts": [{"property": "Tanggal", "direction": "descending"}]
+    }
+    
+    try:
+        results = []
+        has_more = True
+        next_cursor = None
+        
+        async with httpx.AsyncClient() as client:
+            while has_more:
+                if next_cursor:
+                    payload["start_cursor"] = next_cursor
+                response = await client.post(url, headers=headers, json=payload, timeout=20.0)
+                response.raise_for_status()
+                data = response.json()
+                results.extend(data.get('results', []))
+                has_more = data.get('has_more', False)
+                next_cursor = data.get('next_cursor')
+        
+        if not results:
+            await message.reply_text(
+                f"ℹ️ Belum ada transaksi untuk *{kategori_display}* di *{label_bulan}*, King Odiq.",
+                parse_mode="Markdown"
+            )
+            return
+        
+        total = 0
+        pesan = f"📊 *Laporan {kategori_display} — {label_bulan}*\n\n"
+        
+        for i, r in enumerate(results, 1):
+            p = r.get('properties', {})
+            nama = ''
+            title_list = p.get('Name', {}).get('title', [])
+            if title_list:
+                nama = title_list[0].get('plain_text', '-')
+            
+            amt = p.get('Ins (+)/Outs (-)', {}).get('number') or 0
+            total += amt
+            
+            tanggal_raw = p.get('Tanggal', {}).get('date', {})
+            tgl = tanggal_raw.get('start', '-') if tanggal_raw else '-'
+            if tgl != '-':
+                try:
+                    dt = datetime.date.fromisoformat(tgl)
+                    tgl = dt.strftime('%d/%m')
+                except ValueError:
+                    pass
+            
+            sign_str = "+" if amt > 0 else "-"
+            pesan += f"{i}. {nama} | {sign_str}Rp {abs(amt):,.0f} | {tgl}\n"
+        
+        pesan += f"\n*Total:* Rp {total:,.0f} ({len(results)} transaksi)"
+        
+        # Telegram message limit is 4096 chars, split if needed
+        if len(pesan) > 4096:
+            for x in range(0, len(pesan), 4096):
+                await message.reply_text(pesan[x:x+4096], parse_mode="Markdown")
+        else:
+            await message.reply_text(pesan, parse_mode="Markdown")
+        
+    except Exception as e:
+        await message.reply_text(f"❌ Terjadi kesalahan, King Odiq:\n{e}")
 
 
 async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -624,9 +791,11 @@ if __name__ == '__main__':
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CallbackQueryHandler(handle_inline_menu, pattern="^(menu_(report|list|help)|list_all_.*)$"))
+    app.add_handler(CallbackQueryHandler(handle_inline_menu, pattern="^(menu_(report|reportcat|list|help|cancel)|list_all_.*)$"))
     app.add_handler(CallbackQueryHandler(list_expenses, pattern="^list_all_"))
+    app.add_handler(CallbackQueryHandler(reportcat_result, pattern="^rcat_"))
     app.add_handler(CommandHandler("report", report))
+    app.add_handler(CommandHandler("reportcat", reportcat))
     app.add_handler(CommandHandler("list", list_expenses))
     
     print("Bot Telegram Finance Tracker sedang berjalan...")
