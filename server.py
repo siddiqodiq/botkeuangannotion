@@ -240,40 +240,92 @@ async def ambil_data() -> dict:
 # Daur hidup aplikasi
 # ------------------------------------------
 
+# Status startup, dilaporkan lewat /health. Diisi apa adanya termasuk pesan
+# error, supaya kegagalan bisa ditelusuri tanpa harus membaca log dyno.
+_status = {"bot": "belum", "webhook": "belum", "menu": "belum", "error": None}
+
+
+async def daftarkan_ke_telegram() -> None:
+    """Daftarkan webhook dan tombol menu — di luar jalur boot.
+
+    Sengaja dijalankan sebagai task latar belakang: uvicorn menjalankan
+    lifespan SEBELUM mengikat $PORT, jadi panggilan jaringan yang lambat atau
+    gagal di sini akan membuat Heroku membunuh dyno karena boot timeout.
+    Mini App dan /health harus tetap melayani walau Telegram sedang bermasalah.
+    """
+    if not BASE_URL:
+        _status["webhook"] = "dilewati — BASE_URL kosong"
+        logger.warning("BASE_URL kosong — webhook dan tombol menu tidak didaftarkan.")
+        return
+
+    url = f"{BASE_URL}/tg/{WEBHOOK_PATH}"
+
+    # Telegram menghubungi URL-nya untuk memverifikasi saat setWebhook, jadi
+    # aplikasi harus sudah melayani lebih dulu. Uvicorn baru mengikat port
+    # setelah lifespan selesai, karena itu diberi jeda dan dicoba ulang —
+    # tanpa ini pendaftaran bisa gagal hanya karena datang terlalu cepat.
+    for percobaan in range(1, 4):
+        await asyncio.sleep(3 if percobaan == 1 else 5 * percobaan)
+        try:
+            await application.bot.set_webhook(
+                url=url,
+                secret_token=WEBHOOK_SECRET or None,
+                allowed_updates=Update.ALL_TYPES,
+                # Buang update menumpuk saat bot mati, supaya restart tidak
+                # memuntahkan balasan lama sekaligus.
+                drop_pending_updates=True,
+            )
+            _status["webhook"] = "terdaftar"
+            _status["error"] = None
+            logger.info("Webhook didaftarkan ke %s (percobaan %s)", url, percobaan)
+            break
+        except Exception as e:
+            _status["webhook"] = f"gagal (percobaan {percobaan}/3)"
+            _status["error"] = f"{type(e).__name__}: {e}"
+            logger.warning("Percobaan %s mendaftarkan webhook gagal: %s", percobaan, e)
+    else:
+        logger.error("Webhook tidak berhasil didaftarkan setelah 3 percobaan: %s",
+                     _status["error"])
+        return
+
+    try:
+        await application.bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(
+                text="Dashboard",
+                web_app=WebAppInfo(url=f"{BASE_URL}/app"),
+            )
+        )
+        _status["menu"] = "terpasang"
+    except Exception as e:
+        _status["menu"] = f"gagal: {type(e).__name__}"
+        logger.exception("Gagal memasang tombol menu Mini App")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    bot.check_config()
-    await application.initialize()
-    await application.start()
-
-    if BASE_URL:
-        url = f"{BASE_URL}/tg/{WEBHOOK_PATH}"
-        await application.bot.set_webhook(
-            url=url,
-            secret_token=WEBHOOK_SECRET or None,
-            allowed_updates=Update.ALL_TYPES,
-            # Buang update menumpuk saat bot mati, supaya restart tidak
-            # memuntahkan balasan lama sekaligus.
-            drop_pending_updates=True,
-        )
-        logger.info("Webhook didaftarkan ke %s", url)
-
-        try:
-            await application.bot.set_chat_menu_button(
-                menu_button=MenuButtonWebApp(
-                    text="Dashboard",
-                    web_app=WebAppInfo(url=f"{BASE_URL}/app"),
-                )
-            )
-        except Exception:
-            logger.exception("Gagal memasang tombol menu Mini App")
-    else:
-        logger.warning("BASE_URL kosong — webhook dan tombol menu tidak didaftarkan.")
+    tugas = None
+    try:
+        bot.check_config()
+        await application.initialize()
+        await application.start()
+        _status["bot"] = "siap"
+        tugas = asyncio.create_task(daftarkan_ke_telegram())
+    except Exception as e:
+        # Tetap lanjut menyajikan halaman: dyno yang hidup dan bisa dilihat
+        # /health-nya jauh lebih mudah didiagnosis daripada dyno yang mati.
+        _status["bot"] = "gagal"
+        _status["error"] = f"{type(e).__name__}: {e}"
+        logger.exception("Gagal menyiapkan Application Telegram")
 
     yield
 
-    await application.stop()
-    await application.shutdown()
+    if tugas:
+        tugas.cancel()
+    try:
+        await application.stop()
+        await application.shutdown()
+    except Exception:
+        logger.exception("Gagal menghentikan Application dengan rapi")
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None)
@@ -332,4 +384,21 @@ async def halaman_mini_app():
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "webhook": bool(BASE_URL), "izin": len(ALLOWED_USER_IDS)}
+    """Ringkasan kesehatan + config var mana yang terbaca.
+
+    Hanya melaporkan ada/tidaknya, tidak pernah nilainya — supaya endpoint ini
+    aman dibuka dari mana saja sambil tetap berguna untuk menelusuri masalah
+    "sudah diisi tapi kok tidak terbaca".
+    """
+    return {
+        "ok": True,
+        "status": _status,
+        "izin": len(ALLOWED_USER_IDS),
+        "config": {
+            "BASE_URL": bool(BASE_URL),
+            "WEBHOOK_SECRET": bool(WEBHOOK_SECRET),
+            "ALLOWED_USER_IDS": bool(ALLOWED_USER_IDS),
+            "TELEGRAM_TOKEN": bool(bot.TELEGRAM_TOKEN),
+            "NOTION_TOKEN": bool(bot.NOTION_TOKEN),
+        },
+    }
