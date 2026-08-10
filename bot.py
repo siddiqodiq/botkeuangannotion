@@ -1,4 +1,5 @@
 import os
+import re
 import html
 import asyncio
 import logging
@@ -65,6 +66,239 @@ CAT_PEMASUKAN = "💵Pemasukan"
 
 # Kantong default untuk transaksi harian.
 DEFAULT_ACCOUNT = "Kas"
+
+# ------------------------------------------
+# Tebak kategori otomatis dari nama transaksi
+# ------------------------------------------
+#
+# Kata kunci di bawah diturunkan dari analisis 758 transaksi yang sudah ada di
+# database Notion "Transaksi": setiap kata pada judul dihitung sebarannya per
+# kategori, lalu hanya kata yang konsisten (mayoritas jatuh ke satu kategori)
+# yang dipakai di sini. Kata generik yang tersebar rata — "beli", "baru",
+# "lari", "kado", "sepatu" — sengaja tidak dipakai supaya bot tidak menebak
+# asal; nama seperti itu tetap jatuh ke pemilihan manual.
+#
+# Prioritas menyelesaikan judul yang mengandung beberapa kata kunci sekaligus:
+#   3 = penanda kuat, hampir selalu benar meski ketemu kata lain
+#       ("Grab ngopi" -> Transportasi, "Sedekah sarapan" -> Sedekah)
+#   2 = kata kunci normal
+#   1 = petunjuk lemah, kalah dari kata kunci lain mana pun
+#       ("makan malam" -> Makanan, tapi "gojek malam" tetap Transportasi)
+# Pada prioritas sama, frasa yang lebih panjang menang: "uang makan" (Pemasukan)
+# mengalahkan "makan" (Makanan), "gojek plus" (Tagihan) mengalahkan "gojek".
+KEYWORD_RULES = [
+    # --- Penanda transportasi: moda kendaraan mengalahkan tujuan/keperluan ---
+    ("🚋 Transportasi", 3, [
+        "gojek", "gohek", "gojeg", "grab", "gocar", "go car", "gosend",
+        "transport", "transpor", "ojek", "ojol", "busway", "transjakarta",
+        "angkot", "bajaj", "taksi", "taxi", "hiace", "mrt", "krl", "lrt", "tj",
+    ]),
+    ("🚋 Transportasi", 2, [
+        "ongkos", "parkir", "bensin", "pertalite", "pertamax", "kereta",
+        "pesawat", "bandara", "citilink", "soetta", "terminal", "stasiun",
+        "velodrome", "asiop", "e money", "emoney", "damri", "shuttle", "tiket",
+    ]),
+    ("🚋 Transportasi", 1, ["tol", "ongkir", "ngirim", "pulang pergi"]),
+
+    # --- Makanan & minuman (kategori terbesar: 435 dari 758 transaksi) ---
+    ("🍛Makanan", 2, [
+        "makan", "makanan", "sarapan", "sarap", "nyarap", "maksi", "minum",
+        "minuman", "jajan", "nyemil", "cemilan", "ngopi", "kopi", "nongki",
+        "nongkrong", "bukber", "buka puasa", "berbuka", "bukaan", "sahur",
+        "takjil", "puasa", "galon", "aqua", "pocari", "isoplus", "mizone",
+        "nutrisari", "floridina", "cincau", "cingcau", "eskrim", "es krim",
+        "coklat", "donat", "piscok", "kurma", "yupi", "fitbar", "kripik",
+        "keripik", "gorengan", "goreng", "nasgor", "nasi goreng", "miegor",
+        "uduk", "padang", "gudeg", "rendang", "bakso", "indomie", "geprek",
+        "bebek", "pecel", "ketoprak", "toprak", "somay", "siomay", "cuanki",
+        "cilok", "cilor", "cimol", "pempek", "kebab", "kwetiaw", "kwetiau",
+        "ricebox", "ketan", "telur", "telor", "beras", "gacoan", "lawson",
+        "mixue", "warteg", "warung", "katering", "catering", "martabak",
+        "burger", "pizza", "sushi", "dimsum", "seblak", "batagor", "rawon",
+        "opor", "kerupuk", "yogurt", "boba", "matcha", "sembako", "sarden",
+        "nyomay", "nyoto", "ulang tahun",
+        "jeruk", "durian", "pisang", "madu", "susu", "roti", "nasi", "soto",
+        "sate", "lele", "ayam", "mie", "kue", "jus", "teh", "sop",
+    ]),
+    # Petunjuk lemah: benar pada mayoritas judul singkat ("Buka", "Oleh2",
+    # "Ultah"), tapi selalu kalah kalau ada kata kunci lain di judul yang sama.
+    ("🍛Makanan", 1, [
+        "siang", "malam", "pagi", "sore", "malem", "lauk", "buah",
+        "buka", "ayce", "oleh2", "oleh oleh", "ultah", "es",
+    ]),
+
+    # --- Perawatan diri: penanda kuat supaya "sabun cuci sepatu" tidak
+    #     tertarik ke Fashion oleh kata "sepatu" ---
+    ("😁Perawatan/kebersihan", 3, [
+        "sabun", "sabub", "shampoo", "sampo", "cukur", "pangkas", "laundry",
+        "londri", "deodorant", "deodoran", "parfum", "pomade", "sunscreen",
+        "facewash", "face wash", "skincare", "sunlight",
+    ]),
+    ("😁Perawatan/kebersihan", 2, ["potong rambut", "rambut", "muka", "handbody", "lotion"]),
+    ("😁Perawatan/kebersihan", 1, ["cuci", "odol"]),
+
+    # --- Rumah tangga ---
+    ("🏠Alat Rumah", 2, [
+        "tisu", "tisue", "tissue", "sprei", "lampu", "cermin", "amplop",
+        "deterjen", "pewangi", "rapika", "porselen", "hansaplast", "sapu",
+        "ember", "hanger", "gantungan", "nyamuk", "trimmer", "sikat", "gorden",
+        "bantal", "kasur", "wajan", "piring", "gelas", "sendok",
+        "lem sepatu", "baut", "kunci", "meja", "kursi", "lem", "pel",
+    ]),
+
+    # --- Utilitas & tagihan ---
+    ("⚡Listrik", 3, ["token listrik", "listrik", "tokem", "pln"]),
+    ("⚡Listrik", 2, ["token"]),
+    ("🛜Internet", 2, [
+        "internet", "kuota", "wifi", "indihome", "paket data", "biznet",
+        "firstmedia", "inet",
+    ]),
+    ("💳Tagihan", 3, ["gojek plus"]),
+    ("💳Tagihan", 2, [
+        "admin", "bayar kosan", "kosan", "bayar kos", "sewa kos", "pulsa",
+        "top up", "topup", "gopay", "shopeepay", "kartu atm", "iuran",
+        "tagihan", "cicilan", "angsuran", "asuransi", "bpjs", "heroku",
+        "bank", "atm", "ovo",
+    ]),
+    ("💳Tagihan", 1, ["biaya", "pajak"]),
+
+    # --- Sedekah: penanda kuat, "Sedekah sarapan" bukan Makanan ---
+    ("🕋Sedekah", 3, [
+        "sedekah", "donasi", "infak", "infaq", "zakat", "jumat berkah",
+        "kenduri", "santunan", "qurban", "kurban", "amal",
+        # Kiriman rutin ke keluarga. Aman karena Sedekah otomatis tersaring
+        # saat nominal positif — "Dari mamak buat tiket" tetap jadi Pemasukan.
+        "buat mamak", "buat nenek", "buat kakak", "buat abang",
+    ]),
+
+    # --- Pemasukan: hanya dipertimbangkan saat nominalnya positif ---
+    ("💵Pemasukan", 3, [
+        "gajian", "gaji", "gapok", "tukin", "uang makan", "uang lembur",
+        "uang dinas", "uang jalan", "uang saku", "lembur", "dinas", "bonus",
+        "honor", "doorprize", "doorpize", "subsidi", "insentif", "komisi",
+        "dividen", "cashback", "refund", "pemasukan", "jual", "jasa", "thr",
+        "fee",
+    ]),
+    ("💵Pemasukan", 1, ["uang", "masuk", "hadiah"]),
+
+    # --- Investasi / tabungan ---
+    ("🪨Investasi/tabung", 2, [
+        "reksadana", "reksa dana", "investasi", "tabungan", "nabung",
+        "deposito", "obligasi", "bitcoin", "crypto", "kripto", "emas", "btc",
+    ]),
+
+    # --- Kerugian: menang atas "saham" pada "rugi saham" ---
+    ("Kerugian 🤣", 3, ["kerugian", "rugi", "kehilangan", "denda"]),
+    ("🪨Investasi/tabung", 2, ["saham", "xauusd", "forex"]),
+
+    ("👾hutang", 2, ["hutang", "utang", "pinjam", "pinjem", "pinjaman"]),
+
+    # --- Kerja & pendidikan ---
+    ("🔮Kerja/Pendidikan", 2, [
+        "claude", "chatgpt", "openai", "kursus", "sertifikasi", "materai",
+        "seragam", "lisensi", "baju kerja", "pelatihan", "seminar", "webinar",
+        "ujian", "kuliah", "sekolah", "fotokopi", "fotocopy", "print",
+        "pulpen", "ms word", "office", "domain", "hosting", "dasi", "buku",
+        "atk", "vpn",
+    ]),
+
+    # --- Hobi & olahraga ---
+    ("⛷️ Hobi", 2, [
+        "running", "long run", "marathon", "maraton", "racepack", "jersey",
+        "futsal", "minsoc", "fitness", "sepeda", "renang", "badminton",
+        "cupang", "sepatu lari", "kaos lari", "compression", "interval",
+        "tenis", "camping", "mancing", "hobi", "fotoyu", "foto yu",
+        "race", "bola", "gym",
+    ]),
+    ("⛷️ Hobi", 1, ["run"]),
+
+    # --- Fashion ---
+    ("💃 Fashion", 2, [
+        "kemeja", "celana", "sendal", "sandal", "sepatu", "jaket", "kaus kaki",
+        "sarung", "ikat pinggang", "permak", "ngecilin", "celana lari",
+        "baju", "kaos", "topi", "koko", "tas",
+    ]),
+
+    # --- Elektronik ---
+    ("🖥️Elektronik", 2, [
+        "charger", "chrger", "adaptor", "powerbank", "power bank", "monitor",
+        "laptop", "keyboard", "mouse", "headset", "earphone", "speaker",
+        "flashdisk", "harddisk", "printer", "baterai", "casan", "kabel data",
+        "stand laptop", "garmin", "smartwatch", "capcut", "kabel", "case",
+        "ssd", "hp",
+    ]),
+
+    # --- Hiburan ---
+    ("🍿Hiburan", 2, [
+        "spotify", "netflix", "bioskop", "nonton", "konser", "karaoke",
+        "rental ps", "steam", "disney", "vidio", "film", "game",
+    ]),
+]
+
+# Kategori yang masuk akal ketika nominalnya positif (uang masuk). Selain ini,
+# nominal positif berarti Pemasukan — sehingga "uang makan +200rb" tidak
+# tertarik ke Makanan oleh kata "makan", dan "Jual laptop +5jt" tidak jadi
+# Elektronik.
+INFLOW_CATEGORIES = {
+    CAT_PEMASUKAN, CAT_TRANSFER, "👾hutang", "Kerugian 🤣", "🤔Lainnya",
+}
+
+
+def _compile_rules():
+    """Ubah KEYWORD_RULES jadi daftar (regex, kategori, kata_kunci, skor).
+
+    Kata kunci pendek (<5 huruf) dicocokkan per kata utuh supaya "tj" tidak
+    kena "tjahaya" dan "lem" tidak kena "lembur". Kata kunci panjang dicocokkan
+    sebagai substring supaya tahan salah ketik dan imbuhan — "sarap" tetap kena
+    "sarapann"/"nyarap", "makan" tetap kena "makanan".
+    """
+    compiled = []
+    for kategori, prioritas, keywords in KEYWORD_RULES:
+        for kw in keywords:
+            if len(kw) >= 5 or " " in kw:
+                pattern = re.compile(re.escape(kw))
+            else:
+                pattern = re.compile(rf"\b{re.escape(kw)}\b")
+            skor = prioritas * 10_000 + kw.count(" ") * 100 + len(kw)
+            compiled.append((pattern, kategori, kw, skor))
+    return compiled
+
+
+COMPILED_RULES = _compile_rules()
+
+
+def normalize_name(nama: str) -> str:
+    """Turunkan judul transaksi ke huruf kecil dengan pemisah spasi tunggal.
+
+    Emoji, tanda baca dan simbol ("Odol + Pomade", "Transfer Kas → Tabungan")
+    jadi spasi supaya batas kata pada regex bekerja.
+    """
+    teks = re.sub(r"[^a-z0-9]+", " ", str(nama).lower())
+    return f" {teks.strip()} "
+
+
+def guess_category(nama: str, jumlah: float = None):
+    """Tebak kategori dari nama transaksi.
+
+    Mengembalikan (kategori, kata_kunci) bila ada kata kunci yang cocok, atau
+    (None, None) bila tidak — pemanggil lalu menampilkan pemilihan manual.
+    """
+    teks = normalize_name(nama)
+    if not teks.strip():
+        return None, None
+
+    positif = jumlah is not None and jumlah > 0
+    terbaik_skor, terbaik = 0, (None, None)
+    for pattern, kategori, kw, skor in COMPILED_RULES:
+        # Arah uang menyaring kandidat yang mustahil sebelum pencocokan.
+        if positif:
+            if kategori not in INFLOW_CATEGORIES:
+                continue
+        elif kategori == CAT_PEMASUKAN:
+            continue
+        if skor > terbaik_skor and pattern.search(teks):
+            terbaik_skor, terbaik = skor, (kategori, kw)
+    return terbaik
 
 NAMA_BULAN = {
     1: "Januari", 2: "Februari", 3: "Maret", 4: "April",
@@ -442,7 +676,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "💡 <b>Panduan Penggunaan Bot untuk King Odiq</b>\n\n"
         "1️⃣ /add — mencatat transaksi.\n"
         f"   👉 Cara cepat: <code>/add Makan siang, -25k</code>\n"
-        f"   Kantong default <b>{DEFAULT_ACCOUNT}</b>, bisa diganti lewat tombol setelah tersimpan.\n\n"
+        f"   🤖 Kategori terisi otomatis dari nama transaksi. Kalau tidak ada kata "
+        f"yang dikenali, bot minta pilih manual.\n"
+        f"   Kantong default <b>{DEFAULT_ACCOUNT}</b>, kategori dan kantong bisa "
+        f"diganti lewat tombol setelah tersimpan.\n\n"
         "2️⃣ /saldo — saldo tiap aset dan net worth.\n\n"
         "3️⃣ /transfer — pindah aset (mis. Kas → Emas). Tidak dihitung pengeluaran.\n\n"
         "4️⃣ /report — ringkasan arus bulan ini.\n"
@@ -498,13 +735,7 @@ async def process_quick_add(text: str, message, context: ContextTypes.DEFAULT_TY
     context.user_data["nama"] = nama
     context.user_data["jumlah"] = -nilai if jumlah_str.startswith("-") else nilai
 
-    await message.reply_text(
-        f"Nama: <b>{esc(nama)}</b>\nJumlah: <b>{rp(context.user_data['jumlah'])}</b>\n\n"
-        "Pilih kategori transaksi, King Odiq:",
-        reply_markup=category_keyboard("cat_"),
-        parse_mode="HTML",
-    )
-    return KATEGORI
+    return await auto_or_ask_category(message, context)
 
 
 async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -571,7 +802,7 @@ async def ask_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return JUMLAH
 
 
-async def ask_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def receive_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     nilai = parse_amount(update.message.text)
     if nilai is None:
         await update.message.reply_text(
@@ -582,12 +813,7 @@ async def ask_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     jumlah = -nilai if context.user_data.get("pengeluaran", True) else nilai
     context.user_data["jumlah"] = jumlah
 
-    await update.message.reply_text(
-        f"Jumlah: <b>{rp(jumlah)}</b>\n\nPilih kategori transaksi, King Odiq:",
-        reply_markup=category_keyboard("cat_"),
-        parse_mode="HTML",
-    )
-    return KATEGORI
+    return await auto_or_ask_category(update.message, context)
 
 
 def confirmation_markup(page_id: str, allow_change_account: bool) -> InlineKeyboardMarkup:
@@ -604,21 +830,18 @@ def confirmation_markup(page_id: str, allow_change_account: bool) -> InlineKeybo
     ])
 
 
-async def save_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
+async def persist_transaction(message, context: ContextTypes.DEFAULT_TYPE,
+                              kategori: str, kata_kunci: str = None) -> int:
+    """Tulis transaksi ke Notion lalu tampilkan konfirmasi.
 
-    try:
-        kategori = CATEGORIES[int(query.data.replace("cat_", ""))]
-    except (ValueError, IndexError):
-        await query.message.reply_text("⚠️ Kategori tidak valid, King Odiq. Harap pilih menggunakan tombol.")
-        return KATEGORI
-
+    Dipakai baik oleh pemilihan kategori manual maupun hasil tebakan otomatis;
+    `kata_kunci` hanya diisi pada jalur otomatis untuk ditampilkan ke user.
+    """
     nama = context.user_data.get("nama", "-")
     jumlah = context.user_data.get("jumlah", 0)
     tanggal = today_wib().isoformat()
 
-    await query.message.reply_text("⏳ Menyimpan data ke Notion, King Odiq...")
+    await message.reply_text("⏳ Menyimpan data ke Notion, King Odiq...")
 
     try:
         # force=True: saldo dibaca segar sebelum menulis, supaya sisa kas yang
@@ -651,12 +874,15 @@ async def save_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         sign = "📈" if jumlah > 0 else "📉"
         arah = "ke" if jumlah >= 0 else "dari"
         catatan = "\n\n🔁 <i>Transfer aset — tidak dihitung sebagai pengeluaran.</i>" if kategori == CAT_TRANSFER else ""
+        if kata_kunci:
+            catatan += (f"\n\n🤖 <i>Kategori terdeteksi otomatis dari kata "
+                        f"\"{esc(kata_kunci)}\". Tekan 🏷️ Ganti kategori kalau meleset.</i>")
 
         # Dihitung dari saldo segar + nominal, bukan dibaca ulang dari Notion:
         # rollup butuh waktu menyebar setelah page dibuat.
         sisa = akun["saldo"] + jumlah
 
-        await query.message.reply_text(
+        await message.reply_text(
             f"{sign} Data berhasil disimpan ke Notion, King Odiq!\n\n"
             f"🏷️ <b>{esc(nama)}</b>\n"
             f"💰 <code>{rp(jumlah)}</code>\n"
@@ -669,7 +895,7 @@ async def save_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
     except Exception as e:
         logger.exception("Gagal menyimpan transaksi")
-        await query.message.reply_text(
+        await message.reply_text(
             f"⚠️ Gagal menambahkan data, King Odiq.\n\nError: <code>{esc(e)}</code>",
             parse_mode="HTML",
             reply_markup=MAIN_KEYBOARD,
@@ -677,6 +903,38 @@ async def save_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     context.user_data.clear()
     return ConversationHandler.END
+
+
+async def save_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handler tombol kategori — jalur manual."""
+    query = update.callback_query
+    await query.answer()
+
+    try:
+        kategori = CATEGORIES[int(query.data.replace("cat_", ""))]
+    except (ValueError, IndexError):
+        await query.message.reply_text("⚠️ Kategori tidak valid, King Odiq. Harap pilih menggunakan tombol.")
+        return KATEGORI
+
+    return await persist_transaction(query.message, context, kategori)
+
+
+async def auto_or_ask_category(message, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Simpan langsung kalau kategori bisa ditebak, kalau tidak minta manual."""
+    nama = context.user_data.get("nama", "")
+    jumlah = context.user_data.get("jumlah", 0)
+
+    kategori, kata_kunci = guess_category(nama, jumlah)
+    if kategori:
+        return await persist_transaction(message, context, kategori, kata_kunci)
+
+    await message.reply_text(
+        f"Nama: <b>{esc(nama)}</b>\nJumlah: <b>{rp(jumlah)}</b>\n\n"
+        "Pilih kategori transaksi, King Odiq:",
+        reply_markup=category_keyboard("cat_"),
+        parse_mode="HTML",
+    )
+    return KATEGORI
 
 
 async def invalid_inline_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1336,7 +1594,7 @@ if __name__ == "__main__":
                 CallbackQueryHandler(ask_amount, pattern="^tipe_"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, invalid_inline_input),
             ],
-            JUMLAH: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_category)],
+            JUMLAH: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_amount)],
             KATEGORI: [
                 CallbackQueryHandler(save_transaction, pattern=r"^cat_\d+$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, invalid_inline_input),
