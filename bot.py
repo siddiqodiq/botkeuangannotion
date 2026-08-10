@@ -1571,7 +1571,8 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 # ------------------------------------------
 # Jalankan Bot
 # ------------------------------------------
-if __name__ == "__main__":
+def check_config() -> None:
+    """Pastikan seluruh kredensial ada sebelum apa pun dijalankan."""
     missing = [name for name, value in (
         ("TELEGRAM_TOKEN", TELEGRAM_TOKEN),
         ("NOTION_TOKEN", NOTION_TOKEN),
@@ -1581,8 +1582,13 @@ if __name__ == "__main__":
     if missing:
         raise SystemExit(f"Konfigurasi belum lengkap di .env: {', '.join(missing)}")
 
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
+def register_handlers(app) -> None:
+    """Pasang seluruh handler ke Application.
+
+    Dipisah dari main() supaya server.py (mode webhook) memakai persis
+    rangkaian handler yang sama tanpa menduplikasinya.
+    """
     add_handler = ConversationHandler(
         entry_points=[
             CommandHandler("add", start_add),
@@ -1651,7 +1657,27 @@ if __name__ == "__main__":
 
     app.add_error_handler(on_error)
 
-    print("Bot Telegram Finance Tracker sedang berjalan...")
+
+def build_application():
+    """Application siap pakai, belum dijalankan.
+
+    server.py memakainya untuk mode webhook; main() untuk mode polling.
+    """
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    register_handlers(app)
+    return app
+
+
+def main() -> None:
+    """Mode polling — untuk pengembangan lokal.
+
+    Di Heroku bot berjalan lewat server.py (webhook), karena satu proses web
+    melayani bot dan Mini App sekaligus.
+    """
+    check_config()
+    app = build_application()
+
+    print("Bot Telegram Finance Tracker sedang berjalan (polling)...")
 
     try:
         asyncio.get_event_loop()
@@ -1659,3 +1685,7 @@ if __name__ == "__main__":
         asyncio.set_event_loop(asyncio.new_event_loop())
 
     app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
