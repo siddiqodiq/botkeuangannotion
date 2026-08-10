@@ -637,7 +637,20 @@ def category_keyboard(prefix: str) -> InlineKeyboardMarkup:
 # Menu
 # ------------------------------------------
 
+# Tautan langsung Mini App. Tombol web_app dilarang Telegram di grup, tapi
+# tombol URL biasa diizinkan di mana saja — dan tautan t.me?startapp= tetap
+# dibuka Telegram sebagai Mini App, bukan dilempar ke browser. Ini satu-satunya
+# cara resmi memunculkan Dashboard di dalam grup.
+BOT_USERNAME = os.getenv("BOT_USERNAME", "uangodiqBot").strip().lstrip("@")
+MINI_APP_LINK = f"https://t.me/{BOT_USERNAME}?startapp=dash"
+
+
+def dashboard_button() -> InlineKeyboardButton:
+    return InlineKeyboardButton("📊 Dashboard", url=MINI_APP_LINK)
+
+
 MAIN_KEYBOARD = InlineKeyboardMarkup([
+    [dashboard_button()],
     [
         InlineKeyboardButton("➕ Tambah Transaksi", callback_data="menu_add"),
         InlineKeyboardButton("💼 Saldo Aset", callback_data="menu_saldo"),
@@ -668,6 +681,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Kirim tombol pembuka Mini App. Berfungsi di grup maupun chat privat."""
+    message = update.message if update.message else update.callback_query.message
+    if update.message and not is_for_me(update, context):
+        return
+    await message.reply_text(
+        "📊 Buka dashboard keuangan, King Odiq:",
+        reply_markup=InlineKeyboardMarkup([[dashboard_button()]]),
+    )
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.message if update.message else update.callback_query.message
     if update.message and not is_for_me(update, context):
@@ -686,7 +710,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "   👉 Bulan spesifik: <code>/report 5</code>\n\n"
         "5️⃣ /reportcat — laporan per kategori.\n\n"
         "6️⃣ /list — daftar transaksi rinci.\n\n"
-        "7️⃣ /cancel — membatalkan proses.\n\n"
+        "7️⃣ /dashboard — buka dashboard visual (jalan di grup juga).\n\n"
+        "8️⃣ /cancel — membatalkan proses.\n\n"
         "<b>Format nominal:</b> <code>50000</code> · <code>50.000</code> · "
         "<code>50k</code> · <code>1.5jt</code>"
     )
@@ -1637,6 +1662,7 @@ def register_handlers(app) -> None:
     app.add_handler(CommandHandler("report", report))
     app.add_handler(CommandHandler("reportcat", reportcat))
     app.add_handler(CommandHandler("list", list_expenses))
+    app.add_handler(CommandHandler("dashboard", dashboard))
 
     app.add_handler(CallbackQueryHandler(
         handle_inline_menu,
