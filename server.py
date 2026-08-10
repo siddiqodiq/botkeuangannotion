@@ -206,9 +206,15 @@ async def rakit_data() -> dict:
         "ikon": bot.icon_for(a["nama"]),
     } for a in sorted(akun, key=lambda x: -x["saldo"])]
 
+    # Saldo kantong harian dikirim tersendiri supaya Mini App tidak perlu
+    # menebak nama kantong default — itu urusan bot, bukan tampilan.
+    kas = next((a["saldo"] for a in akun if a["nama"] == bot.DEFAULT_ACCOUNT), None)
+
     return {
         "generated": hari_ini,
         "netWorth": sum(a["saldo"] for a in akun),
+        "kas": kas,
+        "kasNama": bot.DEFAULT_ACCOUNT,
         "aset": aset,
         "bulan": list(bulan.values()),
         "tx": tx,

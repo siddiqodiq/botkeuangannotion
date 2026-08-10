@@ -258,6 +258,10 @@
     min-width: 0;
   }
 
+  /* Angka sekunder: satu layar hanya boleh punya satu angka utama, jadi total
+     kekayaan mengalah pada saldo Kas yang lebih sering dilihat. */
+  .hero-value.sekunder { font-size: 24px; }
+
   /* Titik sensor diberi ukuran sendiri supaya rapat dan seimbang di samping
      "Rp" — bullet pada ukuran hero punya advance width yang sangat lebar. */
   .hero-value .dots {
@@ -267,6 +271,8 @@
     vertical-align: 0.1em;
     margin-left: 8px;
   }
+
+  .hero-value.sekunder .dots { font-size: 17px; margin-left: 6px; }
 
   .eye {
     flex: none;
@@ -886,6 +892,16 @@
     <!-- ================= RINGKASAN ================= -->
     <section id="panel-ringkasan" role="tabpanel" aria-labelledby="tab-ringkasan">
       <div class="card">
+        <div class="hero-label" id="kasLabel">Saldo Kas</div>
+        <div class="hero-row">
+          <div class="hero-value masked" id="kasValue"></div>
+          <button class="eye" id="eyeKas" type="button"
+                  aria-pressed="false" aria-label="Tampilkan saldo Kas"></button>
+        </div>
+        <div class="hero-sub" id="kasSub"></div>
+      </div>
+
+      <div class="card" style="margin-top:12px">
         <div class="card-head">
           <span class="card-title" id="flowTitle">Arus bulan ini</span>
           <span class="card-note" id="flowNote"></span>
@@ -905,7 +921,7 @@
       <div class="card" style="margin-top:12px">
         <div class="hero-label">Total kekayaan bersih</div>
         <div class="hero-row">
-          <div class="hero-value masked" id="netWorth"></div>
+          <div class="hero-value sekunder masked" id="netWorth"></div>
           <button class="eye" id="eyeBtn" type="button"
                   aria-pressed="false" aria-label="Tampilkan total kekayaan bersih"></button>
         </div>
@@ -1010,7 +1026,7 @@
   var sel = 0;
   var openCat = null;
   var txFilter = "semua";
-  var tampilkanNet = false;              // total kekayaan tersensor sampai diminta
+  var tampilkanSaldo = false;            // nominal tersensor sampai diminta
 
   /* ----------------------- format angka ----------------------- */
   function angka(n) {
@@ -1138,15 +1154,21 @@
     '<path d="M6.3 6.4A17.4 17.4 0 0 0 2 12s3.6 7 10 7a10 10 0 0 0 4.3-.9"/>' +
     '<path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
 
-  function renderNet() {
-    var el = document.getElementById("netWorth");
-    var btn = document.getElementById("eyeBtn");
-    if (tampilkanNet) {
-      el.textContent = rp(DATA.netWorth);
+  function saldoKas() {
+    if (typeof DATA.kas === "number") return DATA.kas;
+    // Cadangan kalau server versi lama belum mengirim "kas".
+    var nama = DATA.kasNama || "Kas";
+    var cocok = ASET.filter(function (a) { return a.nama === nama; });
+    return cocok.length ? cocok[0].saldo : 0;
+  }
+
+  function pasangNilai(el, btn, nilai, sebutan) {
+    if (tampilkanSaldo) {
+      el.textContent = rp(nilai);
       el.classList.remove("masked");
       btn.innerHTML = MATA_SEMBUNYIKAN;
       btn.setAttribute("aria-pressed", "true");
-      btn.setAttribute("aria-label", "Sembunyikan total kekayaan bersih");
+      btn.setAttribute("aria-label", "Sembunyikan " + sebutan);
     } else {
       el.textContent = "Rp";
       var d = document.createElement("span");
@@ -1156,17 +1178,33 @@
       el.classList.add("masked");
       btn.innerHTML = MATA_TAMPILKAN;
       btn.setAttribute("aria-pressed", "false");
-      btn.setAttribute("aria-label", "Tampilkan total kekayaan bersih");
+      btn.setAttribute("aria-label", "Tampilkan " + sebutan);
     }
+  }
+
+  // Satu keadaan untuk kedua angka: keduanya sama-sama nominal yang ingin
+  // disembunyikan dari orang di sebelah, dan menyensor salah satunya saja
+  // tidak ada gunanya — Kas adalah bagian dari total kekayaan.
+  function renderSaldo() {
+    var namaKas = DATA.kasNama || "Kas";
+    document.getElementById("kasLabel").textContent = "Saldo " + namaKas;
+    pasangNilai(document.getElementById("kasValue"),
+                document.getElementById("eyeKas"),
+                saldoKas(), "saldo " + namaKas);
+    pasangNilai(document.getElementById("netWorth"),
+                document.getElementById("eyeBtn"),
+                DATA.netWorth, "total kekayaan bersih");
   }
 
   function renderRingkasan() {
     var b = BULAN[sel];
 
-    renderNet();
+    renderSaldo();
     var aktif = ASET.filter(function (a) { return a.saldo > 0; });
     document.getElementById("netWorthSub").textContent =
       "Tersebar di " + aktif.length + " kantong · saldo terkini, bukan per bulan";
+    document.getElementById("kasSub").textContent =
+      "Kantong harian — ke sinilah transaksi /add dicatat";
 
     document.getElementById("flowTitle").textContent = "Arus " + b.label;
     document.getElementById("flowNote").textContent = b.n + " transaksi";
@@ -1718,10 +1756,12 @@
   });
 
   /* ---------------------- sensor nominal ---------------------- */
-  document.getElementById("eyeBtn").addEventListener("click", function () {
-    tampilkanNet = !tampilkanNet;
-    getar();
-    renderNet();
+  ["eyeKas", "eyeBtn"].forEach(function (id) {
+    document.getElementById(id).addEventListener("click", function () {
+      tampilkanSaldo = !tampilkanSaldo;
+      getar();
+      renderSaldo();          // kedua kartu ikut, ikonnya tetap seirama
+    });
   });
 
   window.addEventListener("scroll", hideTip, { passive: true });

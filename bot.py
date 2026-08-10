@@ -657,16 +657,21 @@ MAIN_KEYBOARD = InlineKeyboardMarkup([
     ],
     [
         InlineKeyboardButton("📊 Laporan Bulan Ini", callback_data="menu_report"),
-        InlineKeyboardButton("📂 Laporan Kategori", callback_data="menu_reportcat"),
-    ],
-    [
         InlineKeyboardButton("📋 Daftar Transaksi", callback_data="menu_list"),
-        InlineKeyboardButton("🔁 Transfer Aset", callback_data="menu_transfer"),
     ],
     [
+        InlineKeyboardButton("🔁 Transfer Aset", callback_data="menu_transfer"),
         InlineKeyboardButton("❓ Bantuan", callback_data="menu_help"),
+    ],
+    [
         InlineKeyboardButton("❌ Batal", callback_data="menu_cancel"),
     ],
+])
+
+# Fitur yang jarang dipakai dipindah ke sini supaya menu utama tetap ringkas.
+# Dibuka lewat /othermenu — sengaja tanpa tombol di menu utama.
+OTHER_KEYBOARD = InlineKeyboardMarkup([
+    [InlineKeyboardButton("📂 Laporan Kategori", callback_data="menu_reportcat")],
 ])
 
 
@@ -692,6 +697,18 @@ async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def other_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Menu tambahan berisi fitur yang jarang dipakai."""
+    message = update.message if update.message else update.callback_query.message
+    if update.message and not is_for_me(update, context):
+        return
+    await message.reply_text(
+        "📂 <b>Menu tambahan</b>, King Odiq:",
+        parse_mode="HTML",
+        reply_markup=OTHER_KEYBOARD,
+    )
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.message if update.message else update.callback_query.message
     if update.message and not is_for_me(update, context):
@@ -708,9 +725,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "3️⃣ /transfer — pindah aset (mis. Kas → Emas). Tidak dihitung pengeluaran.\n\n"
         "4️⃣ /report — ringkasan arus bulan ini.\n"
         "   👉 Bulan spesifik: <code>/report 5</code>\n\n"
-        "5️⃣ /reportcat — laporan per kategori.\n\n"
-        "6️⃣ /list — daftar transaksi rinci.\n\n"
-        "7️⃣ /dashboard — buka dashboard visual (jalan di grup juga).\n\n"
+        "5️⃣ /list — daftar transaksi rinci.\n\n"
+        "6️⃣ /dashboard — buka dashboard visual (jalan di grup juga).\n\n"
+        "7️⃣ /othermenu — menu tambahan (laporan per kategori).\n\n"
         "8️⃣ /cancel — membatalkan proses.\n\n"
         "<b>Format nominal:</b> <code>50000</code> · <code>50.000</code> · "
         "<code>50k</code> · <code>1.5jt</code>"
@@ -1663,6 +1680,7 @@ def register_handlers(app) -> None:
     app.add_handler(CommandHandler("reportcat", reportcat))
     app.add_handler(CommandHandler("list", list_expenses))
     app.add_handler(CommandHandler("dashboard", dashboard))
+    app.add_handler(CommandHandler("othermenu", other_menu))
 
     app.add_handler(CallbackQueryHandler(
         handle_inline_menu,
