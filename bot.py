@@ -831,11 +831,11 @@ def confirmation_markup(page_id: str, allow_change_account: bool) -> InlineKeybo
 
 
 async def persist_transaction(message, context: ContextTypes.DEFAULT_TYPE,
-                              kategori: str, kata_kunci: str = None) -> int:
+                              kategori: str) -> int:
     """Tulis transaksi ke Notion lalu tampilkan konfirmasi.
 
     Dipakai baik oleh pemilihan kategori manual maupun hasil tebakan otomatis;
-    `kata_kunci` hanya diisi pada jalur otomatis untuk ditampilkan ke user.
+    konfirmasinya sama persis, tanpa menyebut asal kategori.
     """
     nama = context.user_data.get("nama", "-")
     jumlah = context.user_data.get("jumlah", 0)
@@ -874,9 +874,6 @@ async def persist_transaction(message, context: ContextTypes.DEFAULT_TYPE,
         sign = "📈" if jumlah > 0 else "📉"
         arah = "ke" if jumlah >= 0 else "dari"
         catatan = "\n\n🔁 <i>Transfer aset — tidak dihitung sebagai pengeluaran.</i>" if kategori == CAT_TRANSFER else ""
-        if kata_kunci:
-            catatan += (f"\n\n🤖 <i>Kategori terdeteksi otomatis dari kata "
-                        f"\"{esc(kata_kunci)}\". Tekan 🏷️ Ganti kategori kalau meleset.</i>")
 
         # Dihitung dari saldo segar + nominal, bukan dibaca ulang dari Notion:
         # rollup butuh waktu menyebar setelah page dibuat.
@@ -926,7 +923,10 @@ async def auto_or_ask_category(message, context: ContextTypes.DEFAULT_TYPE) -> i
 
     kategori, kata_kunci = guess_category(nama, jumlah)
     if kategori:
-        return await persist_transaction(message, context, kategori, kata_kunci)
+        # Tidak ditampilkan ke user, tapi tetap dicatat supaya kalau tebakannya
+        # meleset bisa ditelusuri kata mana yang memicunya.
+        logger.info("Kategori otomatis: %r -> %s (kata kunci %r)", nama, kategori, kata_kunci)
+        return await persist_transaction(message, context, kategori)
 
     await message.reply_text(
         f"Nama: <b>{esc(nama)}</b>\nJumlah: <b>{rp(jumlah)}</b>\n\n"
