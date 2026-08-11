@@ -427,14 +427,38 @@ async def send_long(message, text: str, reply_markup=None):
         )
 
 
-def is_for_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Helper untuk mencegah bot merespons command tanpa mention di grup."""
-    if update.message and update.message.chat.type != "private":
-        text = update.message.text or ""
-        bot_username = context.bot.username
-        if bot_username and f"@{bot_username.lower()}" not in text.lower():
-            return False
-    return True
+def mention_html(user) -> str:
+    """Sebutan yang dikenali Telegram sebagai mention ke user tersebut."""
+    if user is None:
+        return ""
+    if user.username:
+        return f"@{user.username}"
+    return f'<a href="tg://user?id={user.id}">{esc(user.full_name)}</a>'
+
+
+async def ask_text(update: Update, pertanyaan: str) -> None:
+    """Tanya sesuatu yang jawabannya teks bebas, sambil membuka kotak balasan.
+
+    Di grup ini satu-satunya jalur yang bisa diandalkan. Bot dengan privacy mode
+    aktif — bawaan Telegram — hanya menerima pesan yang membalas pesannya
+    sendiri, jadi kalau kotak balasan tidak terbuka jawaban user tidak pernah
+    sampai dan bot terlihat menggantung tanpa pesan error apa pun.
+
+    ForceReply(selective=True) hanya menyasar user yang di-mention pada teks,
+    atau pengirim pesan yang dibalas. Prompt yang muncul setelah tombol ditekan
+    dibalaskan ke pesan bot sendiri — tanpa mention prompt itu tidak menyasar
+    siapa pun, sehingga kotak balasan tidak pernah terbuka di grup.
+    """
+    message = update.effective_message
+    teks = pertanyaan
+    if message.chat.type != "private":
+        teks += (f"\n\n{mention_html(update.effective_user)} — balas (reply) "
+                 "pesan ini dengan jawabannya, King Odiq.")
+    await message.reply_text(
+        teks,
+        reply_markup=ForceReply(selective=True),
+        parse_mode="HTML",
+    )
 
 
 # ------------------------------------------
@@ -677,8 +701,6 @@ OTHER_KEYBOARD = InlineKeyboardMarkup([
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.message if update.message else update.callback_query.message
-    if update.message and not is_for_me(update, context):
-        return
     await message.reply_text(
         "Halo King Odiq! 👋 Saya adalah Bot Keuangan Notion Anda.\n\n"
         "Silakan pilih menu di bawah ini untuk mulai mencatat atau melihat keuangan Anda.",
@@ -689,8 +711,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Kirim tombol pembuka Mini App. Berfungsi di grup maupun chat privat."""
     message = update.message if update.message else update.callback_query.message
-    if update.message and not is_for_me(update, context):
-        return
     await message.reply_text(
         "📊 Buka dashboard keuangan, King Odiq:",
         reply_markup=InlineKeyboardMarkup([[dashboard_button()]]),
@@ -700,8 +720,6 @@ async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def other_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Menu tambahan berisi fitur yang jarang dipakai."""
     message = update.message if update.message else update.callback_query.message
-    if update.message and not is_for_me(update, context):
-        return
     await message.reply_text(
         "📂 <b>Menu tambahan</b>, King Odiq:",
         parse_mode="HTML",
@@ -711,8 +729,6 @@ async def other_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.message if update.message else update.callback_query.message
-    if update.message and not is_for_me(update, context):
-        return
     pesan = (
         "💡 <b>Panduan Penggunaan Bot untuk King Odiq</b>\n\n"
         "1️⃣ /add — mencatat transaksi.\n"
@@ -730,7 +746,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "7️⃣ /othermenu — menu tambahan (laporan per kategori).\n\n"
         "8️⃣ /cancel — membatalkan proses.\n\n"
         "<b>Format nominal:</b> <code>50000</code> · <code>50.000</code> · "
-        "<code>50k</code> · <code>1.5jt</code>"
+        "<code>50k</code> · <code>1.5jt</code>\n\n"
+        "<b>Di grup:</b> jawaban teks (nama & nominal) harus dikirim sebagai "
+        "<b>balasan</b> atas pertanyaan bot — Telegram tidak meneruskan pesan "
+        "biasa ke bot di grup. Cara paling cepat tetap "
+        "<code>/add Makan siang, -25k</code> yang selesai dalam satu pesan."
     )
     await message.reply_text(pesan, parse_mode="HTML", reply_markup=MAIN_KEYBOARD)
 
@@ -786,10 +806,12 @@ async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await update.callback_query.answer()
         text = ""
     else:
-        if not is_for_me(update, context):
-            return ConversationHandler.END
         parts = update.message.text.split(maxsplit=1)
         text = parts[1].strip() if len(parts) > 1 else ""
+
+    # Handler ini bisa dimasuki ulang di tengah alur lama (allow_reentry), jadi
+    # sisa jawaban percakapan sebelumnya harus dibuang di sini.
+    context.user_data.clear()
 
     if text:
         if "," in text:
@@ -805,11 +827,10 @@ async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         )
         return TIPE
 
-    await message.reply_text(
+    await ask_text(
+        update,
         "📝 Mari tambahkan transaksi baru.\n\n"
         "Silakan masukkan <b>Nama Transaksi</b>, King Odiq:",
-        reply_markup=ForceReply(selective=True),
-        parse_mode="HTML",
     )
     return NAMA
 
@@ -836,10 +857,9 @@ async def ask_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await query.answer()
 
     context.user_data["pengeluaran"] = query.data == "tipe_pengeluaran"
-    await query.message.reply_text(
+    await ask_text(
+        update,
         "Silakan masukkan <b>Jumlah Nominal</b>, King Odiq (contoh: 50000, 50k, 1.5jt):",
-        reply_markup=ForceReply(selective=True),
-        parse_mode="HTML",
     )
     return JUMLAH
 
@@ -847,8 +867,10 @@ async def ask_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def receive_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     nilai = parse_amount(update.message.text)
     if nilai is None:
-        await update.message.reply_text(
-            "⚠️ Nominal tidak valid, King Odiq! Harap masukkan angka (contoh: 50000, 50k, 1.5jt):"
+        await ask_text(
+            update,
+            "⚠️ Nominal tidak valid, King Odiq! Harap masukkan angka "
+            "(contoh: 50000, 50k, 1.5jt):",
         )
         return JUMLAH
 
@@ -1146,8 +1168,8 @@ async def start_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     message = update.message if update.message else update.callback_query.message
     if update.callback_query:
         await update.callback_query.answer()
-    elif not is_for_me(update, context):
-        return ConversationHandler.END
+
+    context.user_data.clear()
 
     try:
         accounts = await get_accounts(force=True)
@@ -1205,24 +1227,33 @@ async def transfer_ask_amount(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["trf_dari"] = source
     context.user_data["trf_ke"] = dest
 
-    await query.message.reply_text(
+    await ask_text(
+        update,
         f"{icon_for(source['nama'])} {esc(source['nama'])} → "
         f"{icon_for(dest['nama'])} {esc(dest['nama'])}\n\n"
         "Berapa nominalnya, King Odiq? (contoh: 500k, 1.5jt)",
-        reply_markup=ForceReply(selective=True),
-        parse_mode="HTML",
     )
     return TRF_JUMLAH
 
 
 async def transfer_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # user_data dipakai bersama oleh alur tambah dan transfer, jadi alur lain
+    # yang dimulai di tengah jalan bisa menghapus pilihan kantong di sini.
+    source = context.user_data.get("trf_dari")
+    dest = context.user_data.get("trf_ke")
+    if not source or not dest:
+        await update.message.reply_text(
+            "⌛ Sesi transfer ini sudah tidak berlaku, King Odiq. Silakan ulangi /transfer.",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
     nilai = parse_amount(update.message.text)
     if nilai is None:
-        await update.message.reply_text("⚠️ Nominal tidak valid, King Odiq. Contoh: 500k atau 1.5jt")
+        await ask_text(update, "⚠️ Nominal tidak valid, King Odiq. Contoh: 500k atau 1.5jt")
         return TRF_JUMLAH
 
-    source = context.user_data["trf_dari"]
-    dest = context.user_data["trf_ke"]
     tanggal = today_wib().isoformat()
     nama = f"Transfer {source['nama']} → {dest['nama']}"
 
@@ -1273,8 +1304,6 @@ async def transfer_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def saldo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     message = update.message if update.message else query.message
-    if update.message and not is_for_me(update, context):
-        return
 
     # Tampilan ringkas (hanya Kas) kecuali diminta lengkap lewat tombol.
     show_all = bool(query and query.data == "saldo_all")
@@ -1333,8 +1362,6 @@ async def saldo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.message if update.message else update.callback_query.message
-    if update.message and not is_for_me(update, context):
-        return
 
     bulan, tahun, error = resolve_month(context.args, "/report 5 (untuk Mei)")
     if error:
@@ -1412,8 +1439,6 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def reportcat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Tampilkan pemilih kategori untuk laporan terfilter."""
     message = update.message if update.message else update.callback_query.message
-    if update.message and not is_for_me(update, context):
-        return
 
     bulan, tahun, error = resolve_month(context.args, "/reportcat 5 (untuk Mei)")
     if error:
@@ -1507,8 +1532,6 @@ async def reportcat_result(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.message if update.message else update.callback_query.message
-    if update.message and not is_for_me(update, context):
-        return
 
     query = update.callback_query
     show_all = False
@@ -1649,6 +1672,11 @@ def register_handlers(app) -> None:
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
+        # State percakapan hanya ada di memori dan tidak pernah kedaluwarsa
+        # sendiri. Tanpa ini, satu alur yang tergantung (mis. jawaban user tidak
+        # sampai ke bot di grup) membuat /add dan tombol Tambah Transaksi ikut
+        # mati untuk user tersebut sampai dia menemukan /cancel.
+        allow_reentry=True,
     )
 
     transfer_handler = ConversationHandler(
@@ -1668,12 +1696,16 @@ def register_handlers(app) -> None:
             TRF_JUMLAH: [MessageHandler(filters.TEXT & ~filters.COMMAND, transfer_save)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
+        allow_reentry=True,
     )
 
     app.add_handler(add_handler)
     app.add_handler(transfer_handler)
 
     app.add_handler(CommandHandler("start", start))
+    # Kalau ada percakapan aktif, fallback di ConversationHandler yang menang;
+    # handler ini kebagian /cancel di luar percakapan supaya tidak pernah diam.
+    app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("saldo", saldo))
     app.add_handler(CommandHandler("report", report))
