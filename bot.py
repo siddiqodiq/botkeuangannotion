@@ -428,12 +428,16 @@ async def send_long(message, text: str, reply_markup=None):
 
 
 def mention_html(user) -> str:
-    """Sebutan yang dikenali Telegram sebagai mention ke user tersebut."""
+    """Mention tak terlihat ke user tersebut.
+
+    Tautan tg://user?id tetap dihitung klien Telegram sebagai mention meski
+    labelnya cuma zero-width space, jadi ForceReply(selective=True) tetap
+    menyasar orangnya tanpa menambah teks pemberitahuan yang terlihat.
+    """
     if user is None:
         return ""
-    if user.username:
-        return f"@{user.username}"
-    return f'<a href="tg://user?id={user.id}">{esc(user.full_name)}</a>'
+    zwsp = chr(0x200B)
+    return f'<a href="tg://user?id={user.id}">{zwsp}</a>'
 
 
 async def ask_text(update: Update, pertanyaan: str) -> None:
@@ -447,13 +451,13 @@ async def ask_text(update: Update, pertanyaan: str) -> None:
     ForceReply(selective=True) hanya menyasar user yang di-mention pada teks,
     atau pengirim pesan yang dibalas. Prompt yang muncul setelah tombol ditekan
     dibalaskan ke pesan bot sendiri — tanpa mention prompt itu tidak menyasar
-    siapa pun, sehingga kotak balasan tidak pernah terbuka di grup.
+    siapa pun, sehingga kotak balasan tidak pernah terbuka di grup. Mention-nya
+    ditempel tak terlihat (lihat mention_html) supaya tidak mengotori pesan.
     """
     message = update.effective_message
     teks = pertanyaan
     if message.chat.type != "private":
-        teks += (f"\n\n{mention_html(update.effective_user)} — balas (reply) "
-                 "pesan ini dengan jawabannya, King Odiq.")
+        teks += mention_html(update.effective_user)
     await message.reply_text(
         teks,
         reply_markup=ForceReply(selective=True),
