@@ -67,6 +67,35 @@ CAT_PEMASUKAN = "💵Pemasukan"
 # Kantong default untuk transaksi harian.
 DEFAULT_ACCOUNT = "Kas"
 
+
+# ------------------------------------------
+# Rekap harian otomatis — konfigurasi
+# ------------------------------------------
+
+# Jam kirim rekap dalam WIB. Default 22:30, bisa digeser lewat config var
+# tanpa menyentuh kode.
+REKAP_JAM = int(os.getenv("REKAP_JAM", "").strip() or 22)
+REKAP_MENIT = int(os.getenv("REKAP_MENIT", "").strip() or 30)
+
+
+def _baca_daftar_id(nama: str) -> list:
+    """Baca config var berisi id Telegram dipisah koma. Id grup boleh negatif."""
+    hasil = []
+    for potongan in os.getenv(nama, "").replace(" ", "").split(","):
+        try:
+            hasil.append(int(potongan))
+        except ValueError:
+            continue
+    return hasil
+
+
+# Chat tujuan rekap. Kalau REKAP_CHAT_IDS kosong, dipakai ALLOWED_USER_IDS yang
+# sudah ada untuk dashboard — supaya hal yang sama tidak perlu diisi dua kali.
+REKAP_CHAT_IDS = _baca_daftar_id("REKAP_CHAT_IDS") or _baca_daftar_id("ALLOWED_USER_IDS")
+
+# Matikan rekap dengan REKAP_AKTIF=0, tanpa harus mengosongkan daftar chat.
+REKAP_AKTIF = os.getenv("REKAP_AKTIF", "1").strip().lower() not in ("0", "false", "off", "no")
+
 # ------------------------------------------
 # Tebak kategori otomatis dari nama transaksi
 # ------------------------------------------
@@ -306,6 +335,12 @@ NAMA_BULAN = {
     9: "September", 10: "Oktober", 11: "November", 12: "Desember",
 }
 
+# Indeks mengikuti datetime.date.weekday(): 0 = Senin.
+NAMA_HARI = {
+    0: "Senin", 1: "Selasa", 2: "Rabu", 3: "Kamis",
+    4: "Jumat", 5: "Sabtu", 6: "Minggu",
+}
+
 ACCOUNT_ICONS = {
     "Kas": "💵",
     "Tabungan": "🏦",
@@ -400,16 +435,14 @@ def month_bounds(bulan: int, tahun: int):
     return first, after
 
 
-async def send_long(message, text: str, reply_markup=None):
-    """Kirim pesan panjang dengan pemenggalan di batas baris.
+def potong_pesan(text: str, limit: int = 3900) -> list:
+    """Penggal teks di batas baris supaya muat batas 4096 karakter Telegram.
 
     Memotong mentah tiap 4096 karakter bisa membelah tag HTML di tengah dan
     membuat Telegram menolak seluruh pesan.
     """
-    limit = 3900
-    lines = text.split("\n")
     chunks, current = [], ""
-    for line in lines:
+    for line in text.split("\n"):
         if len(current) + len(line) + 1 > limit and current:
             chunks.append(current)
             current = line
@@ -417,7 +450,12 @@ async def send_long(message, text: str, reply_markup=None):
             current = f"{current}\n{line}" if current else line
     if current:
         chunks.append(current)
+    return chunks
 
+
+async def send_long(message, text: str, reply_markup=None):
+    """Balas dengan pesan panjang; dipenggal otomatis kalau perlu."""
+    chunks = potong_pesan(text)
     for i, chunk in enumerate(chunks):
         is_last = i == len(chunks) - 1
         await message.reply_text(
@@ -629,6 +667,24 @@ async def saldo_footer() -> str:
     return baris
 
 
+async def saldo_kas_baris() -> str:
+    """Baris saldo Kas saja — dipakai rekap harian.
+
+    saldo_footer() ikut menampilkan Saldo NET; rekap harian sengaja berhenti di
+    Kas. Dikembalikan kosong kalau gagal, supaya rekap tetap terkirim.
+    """
+    try:
+        accounts = await get_accounts(force=True)
+    except Exception:
+        logger.exception("Gagal membaca saldo Kas untuk rekap harian")
+        return ""
+
+    kas = next((a["saldo"] for a in accounts if a["nama"] == DEFAULT_ACCOUNT), None)
+    if kas is None:
+        return ""
+    return f"\n{icon_for(DEFAULT_ACCOUNT)} <b>{DEFAULT_ACCOUNT}:</b> {rp(kas)}"
+
+
 def account_keyboard(accounts: list, data_for, skip_id: str = None, per_row: int = 2) -> InlineKeyboardMarkup:
     """Tombol akun. Indeks yang dikirim selalu mengacu ke daftar penuh dari
     get_accounts() yang urutannya deterministik, supaya callback_data tetap sah
@@ -747,8 +803,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "   👉 Bulan spesifik: <code>/report 5</code>\n\n"
         "5️⃣ /list — daftar transaksi rinci.\n\n"
         "6️⃣ /dashboard — buka dashboard visual (jalan di grup juga).\n\n"
-        "7️⃣ /othermenu — menu tambahan (laporan per kategori).\n\n"
-        "8️⃣ /cancel — membatalkan proses.\n\n"
+        "7️⃣ /rekap — rekap transaksi hari ini.\n"
+        f"   🌙 Terkirim otomatis tiap hari pukul {REKAP_JAM:02d}.{REKAP_MENIT:02d} WIB.\n\n"
+        "8️⃣ /othermenu — menu tambahan (laporan per kategori).\n\n"
+        "9️⃣ /cancel — membatalkan proses.\n\n"
         "<b>Format nominal:</b> <code>50000</code> · <code>50.000</code> · "
         "<code>50k</code> · <code>1.5jt</code>\n\n"
         "<b>Di grup:</b> jawaban teks (nama & nominal) harus dikirim sebagai "
@@ -1617,6 +1675,186 @@ async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await message.reply_text(f"❌ Terjadi kesalahan, King Odiq:\n<code>{esc(e)}</code>", parse_mode="HTML")
 
 
+# ------------------------------------------
+# Rekap harian otomatis
+# ------------------------------------------
+
+async def bangun_rekap_harian(tanggal: datetime.date) -> str:
+    """Susun teks rekap seluruh transaksi pada satu tanggal.
+
+    Dipisah dari pengirimannya supaya bentuk pesan yang sama dipakai penjadwal
+    maupun perintah manual /rekap — tidak ada dua versi yang bisa menyimpang.
+    """
+    payload = {
+        "filter": {"property": "Tanggal", "date": {"equals": tanggal.isoformat()}},
+        "sorts": [{"timestamp": "created_time", "direction": "ascending"}],
+    }
+    raw = await notion_query_all(NOTION_DATABASE_ID, payload)
+    results = [r for r in raw if not is_blank_row(r.get("properties", {}))]
+
+    label = (f"{NAMA_HARI[tanggal.weekday()]}, {tanggal.day} "
+             f"{NAMA_BULAN[tanggal.month]} {tanggal.year}")
+    judul = f"🌙 <b>Rekap Harian — {label}</b>\n\n"
+
+    if not results:
+        return (judul + "ℹ️ Belum ada transaksi tercatat hari ini, King Odiq.\n"
+                + await saldo_kas_baris())
+
+    baris = []
+    for i, r in enumerate(results, 1):
+        props = r.get("properties", {})
+        amount = p_number(props, "Ins (+)/Outs (-)") or 0
+        kategori = p_select(props, "Kategori") or "-"
+
+        # Transfer memindahkan uang, tidak menghabiskannya (brief bagian 1),
+        # jadi penandanya dibedakan dari pemasukan maupun pengeluaran.
+        if is_transfer(props):
+            marker = "🔁"
+        elif amount > 0:
+            marker = "+"
+        else:
+            marker = "-"
+
+        baris.append(
+            f"{i}. {esc(p_title(props) or '-')} | {marker}{rp(abs(amount))} | {esc(kategori)}"
+        )
+
+    # Ditutup baris Kas saja: total dan rincian lain sudah tersedia lewat
+    # /report dan /saldo, rekap malam ini dijaga tetap sependek mungkin.
+    return judul + "\n".join(baris) + "\n" + await saldo_kas_baris()
+
+
+async def kirim_rekap_harian(app, tanggal: datetime.date = None) -> int:
+    """Kirim rekap ke seluruh chat tujuan; kembalikan jumlah chat yang berhasil.
+
+    Kegagalan satu chat tidak boleh menghentikan chat lain, dan kegagalan Notion
+    tidak boleh mematikan penjadwal — keduanya cukup dicatat di log.
+    """
+    tanggal = tanggal or today_wib()
+
+    if not REKAP_CHAT_IDS:
+        logger.warning(
+            "Rekap harian tidak dikirim: REKAP_CHAT_IDS dan ALLOWED_USER_IDS "
+            "sama-sama kosong."
+        )
+        return 0
+
+    try:
+        pesan = await bangun_rekap_harian(tanggal)
+    except Exception:
+        logger.exception("Gagal menyusun rekap harian %s", tanggal)
+        return 0
+
+    bagian = potong_pesan(pesan)
+    berhasil = 0
+    for chat_id in REKAP_CHAT_IDS:
+        try:
+            for teks in bagian:
+                await app.bot.send_message(chat_id, teks, parse_mode="HTML")
+            berhasil += 1
+        except Exception:
+            logger.exception("Gagal mengirim rekap harian ke chat %s", chat_id)
+
+    logger.info("Rekap harian %s terkirim ke %s dari %s chat",
+                tanggal, berhasil, len(REKAP_CHAT_IDS))
+    return berhasil
+
+
+def _jadwal_berikutnya(sekarang: datetime.datetime = None) -> datetime.datetime:
+    """Waktu kirim berikutnya, selalu di masa depan."""
+    sekarang = sekarang or datetime.datetime.now(WIB)
+    target = sekarang.replace(hour=REKAP_JAM, minute=REKAP_MENIT,
+                              second=0, microsecond=0)
+    if target <= sekarang:
+        target += datetime.timedelta(days=1)
+    return target
+
+
+# Tanggal rekap terakhir yang dikirim penjadwal — penjaga supaya satu hari tidak
+# terkirim dua kali walau loop terbangun lebih dari sekali di sekitar jam target.
+_rekap_terakhir = None
+_rekap_task = None
+
+
+async def _loop_rekap_harian(app) -> None:
+    """Tunggu sampai jam target lalu kirim rekap, berulang tiap hari.
+
+    Sengaja tidak memakai JobQueue: extra job-queue PTB menyeret APScheduler
+    yang hanya menerima timezone pytz, sedangkan WIB di sini datetime.timezone.
+    Loop ini juga bangun tiap 10 menit, bukan tidur sekali 24 jam, supaya jam
+    sistem yang bergeser atau proses yang sempat tertidur tidak membuat jadwal
+    hari itu terlewat diam-diam.
+    """
+    global _rekap_terakhir
+
+    # Kalau proses baru menyala setelah jam target, hari ini dianggap sudah
+    # lewat. Tanpa ini, restart pukul 23.00 akan memuntahkan rekap susulan.
+    sekarang = datetime.datetime.now(WIB)
+    if (sekarang.hour, sekarang.minute) >= (REKAP_JAM, REKAP_MENIT):
+        _rekap_terakhir = sekarang.date()
+
+    logger.info("Penjadwal rekap harian aktif — kirim berikutnya %s WIB ke %s chat",
+                _jadwal_berikutnya().strftime("%Y-%m-%d %H:%M"), len(REKAP_CHAT_IDS))
+
+    while True:
+        sisa = (_jadwal_berikutnya() - datetime.datetime.now(WIB)).total_seconds()
+        await asyncio.sleep(max(1, min(sisa, 600)))
+
+        sekarang = datetime.datetime.now(WIB)
+        sudah_waktunya = (sekarang.hour, sekarang.minute) >= (REKAP_JAM, REKAP_MENIT)
+        if sudah_waktunya and _rekap_terakhir != sekarang.date():
+            _rekap_terakhir = sekarang.date()
+            await kirim_rekap_harian(app, sekarang.date())
+
+
+def jadwalkan_rekap_harian(app):
+    """Nyalakan penjadwal sekali saja. Aman dipanggil berulang."""
+    global _rekap_task
+
+    if not REKAP_AKTIF:
+        logger.info("Rekap harian dimatikan lewat REKAP_AKTIF.")
+        return None
+    if _rekap_task is not None and not _rekap_task.done():
+        return _rekap_task
+
+    _rekap_task = asyncio.create_task(_loop_rekap_harian(app))
+    return _rekap_task
+
+
+async def rekap_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/rekap — rekap hari ini sekarang juga, tanpa menunggu jadwal.
+
+    Argumen opsional: /rekap 2025-08-17 atau /rekap kemarin.
+    """
+    message = update.message if update.message else update.callback_query.message
+
+    tanggal = today_wib()
+    if context.args:
+        arg = context.args[0].strip().lower()
+        if arg in ("kemarin", "yesterday"):
+            tanggal -= datetime.timedelta(days=1)
+        else:
+            try:
+                tanggal = datetime.date.fromisoformat(arg)
+            except ValueError:
+                await message.reply_text(
+                    "⚠️ Format tanggal salah, King Odiq. Contoh: "
+                    "<code>/rekap 2025-08-17</code> atau <code>/rekap kemarin</code>",
+                    parse_mode="HTML",
+                )
+                return
+
+    await message.reply_text("⏳ Menyusun rekap harian untuk King Odiq...")
+    try:
+        await send_long(message, await bangun_rekap_harian(tanggal))
+    except Exception as e:
+        logger.exception("Gagal menyusun rekap harian manual")
+        await message.reply_text(
+            f"❌ Terjadi kesalahan, King Odiq:\n<code>{esc(e)}</code>",
+            parse_mode="HTML",
+        )
+
+
 async def expired_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Tombol dari percakapan yang sudah tidak aktif.
 
@@ -1715,6 +1953,7 @@ def register_handlers(app) -> None:
     app.add_handler(CommandHandler("report", report))
     app.add_handler(CommandHandler("reportcat", reportcat))
     app.add_handler(CommandHandler("list", list_expenses))
+    app.add_handler(CommandHandler("rekap", rekap_command))
     app.add_handler(CommandHandler("dashboard", dashboard))
     app.add_handler(CommandHandler("othermenu", other_menu))
 
@@ -1738,12 +1977,22 @@ def register_handlers(app) -> None:
     app.add_error_handler(on_error)
 
 
+async def _post_init(app) -> None:
+    """Dipanggil PTB tepat sebelum polling dimulai (mode lokal).
+
+    Mode webhook tidak melewati jalur ini, jadi server.py menyalakan penjadwal
+    sendiri lewat jadwalkan_rekap_harian(). Fungsi itu idempoten, jadi aman
+    walaupun keduanya sempat terpanggil.
+    """
+    jadwalkan_rekap_harian(app)
+
+
 def build_application():
     """Application siap pakai, belum dijalankan.
 
     server.py memakainya untuk mode webhook; main() untuk mode polling.
     """
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(_post_init).build()
     register_handlers(app)
     return app
 

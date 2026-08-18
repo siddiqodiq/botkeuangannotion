@@ -248,7 +248,8 @@ async def ambil_data() -> dict:
 
 # Status startup, dilaporkan lewat /health. Diisi apa adanya termasuk pesan
 # error, supaya kegagalan bisa ditelusuri tanpa harus membaca log dyno.
-_status = {"bot": "belum", "webhook": "belum", "menu": "belum", "error": None}
+_status = {"bot": "belum", "webhook": "belum", "menu": "belum",
+           "rekap": "belum", "error": None}
 
 
 async def daftarkan_ke_telegram() -> None:
@@ -316,6 +317,16 @@ async def lifespan(_app: FastAPI):
         await application.start()
         _status["bot"] = "siap"
         tugas = asyncio.create_task(daftarkan_ke_telegram())
+
+        # Rekap harian. Mode webhook tidak melewati post_init PTB, jadi
+        # penjadwalnya dinyalakan di sini.
+        if bot.jadwalkan_rekap_harian(application):
+            _status["rekap"] = (
+                f"aktif {bot.REKAP_JAM:02d}:{bot.REKAP_MENIT:02d} WIB "
+                f"→ {len(bot.REKAP_CHAT_IDS)} chat"
+            )
+        else:
+            _status["rekap"] = "nonaktif"
     except Exception as e:
         # Tetap lanjut menyajikan halaman: dyno yang hidup dan bisa dilihat
         # /health-nya jauh lebih mudah didiagnosis daripada dyno yang mati.
@@ -327,6 +338,8 @@ async def lifespan(_app: FastAPI):
 
     if tugas:
         tugas.cancel()
+    if bot._rekap_task:
+        bot._rekap_task.cancel()
     try:
         await application.stop()
         await application.shutdown()
@@ -386,6 +399,30 @@ async def halaman_mini_app():
         media_type="text/html; charset=utf-8",
         headers={"Cache-Control": "no-store"},
     )
+
+
+@app.post("/cron/rekap")
+async def cron_rekap(x_cron_secret: str = Header(default="")):
+    """Pemicu rekap harian dari penjadwal luar (mis. Heroku Scheduler, cron-job.org).
+
+    Penjadwal internal hidup di dalam proses web, jadi ia ikut berhenti kalau
+    dyno tertidur atau di-restart tepat di jam kirim. Endpoint ini memberi jalur
+    kedua yang tidak bergantung pada proses itu tetap terjaga.
+
+    Dilindungi WEBHOOK_SECRET; kalau secret belum diisi, endpoint ditutup —
+    memicu kiriman ke chat pemilik tidak boleh terbuka untuk siapa saja.
+    """
+    if not WEBHOOK_SECRET:
+        raise HTTPException(status_code=503, detail="WEBHOOK_SECRET belum diisi")
+    if not hmac.compare_digest(x_cron_secret or "", WEBHOOK_SECRET):
+        logger.warning("Pemicu /cron/rekap ditolak: secret tidak cocok")
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    hari = bot.today_wib()
+    # Tandai lebih dulu supaya penjadwal internal tidak mengirim ulang hari ini.
+    bot._rekap_terakhir = hari
+    terkirim = await bot.kirim_rekap_harian(application, hari)
+    return {"ok": True, "tanggal": hari.isoformat(), "terkirim": terkirim}
 
 
 @app.get("/health")
