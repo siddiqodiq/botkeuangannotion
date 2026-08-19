@@ -89,9 +89,34 @@ def _baca_daftar_id(nama: str) -> list:
     return hasil
 
 
+def _baca_tujuan_rekap(nama: str) -> list:
+    """Baca tujuan rekap: daftar "chat_id" atau "chat_id:topic_id" dipisah koma.
+
+    Bentuk "-1003966896650:33" menunjuk satu topic di grup forum — angka di
+    belakang titik dua dipakai sebagai message_thread_id. Tanpa titik dua,
+    pesan masuk ke chat utama seperti sebelumnya.
+    """
+    hasil = []
+    for potongan in os.getenv(nama, "").replace(" ", "").split(","):
+        if not potongan:
+            continue
+        chat, _, topic = potongan.partition(":")
+        try:
+            chat_id = int(chat)
+        except ValueError:
+            continue
+        try:
+            thread_id = int(topic) if topic else None
+        except ValueError:
+            thread_id = None
+        hasil.append((chat_id, thread_id))
+    return hasil
+
+
 # Chat tujuan rekap. Kalau REKAP_CHAT_IDS kosong, dipakai ALLOWED_USER_IDS yang
 # sudah ada untuk dashboard — supaya hal yang sama tidak perlu diisi dua kali.
-REKAP_CHAT_IDS = _baca_daftar_id("REKAP_CHAT_IDS") or _baca_daftar_id("ALLOWED_USER_IDS")
+REKAP_CHAT_IDS = (_baca_tujuan_rekap("REKAP_CHAT_IDS")
+                  or [(uid, None) for uid in _baca_daftar_id("ALLOWED_USER_IDS")])
 
 # Matikan rekap dengan REKAP_AKTIF=0, tanpa harus mengosongkan daftar chat.
 REKAP_AKTIF = os.getenv("REKAP_AKTIF", "1").strip().lower() not in ("0", "false", "off", "no")
@@ -1747,13 +1772,18 @@ async def kirim_rekap_harian(app, tanggal: datetime.date = None) -> int:
 
     bagian = potong_pesan(pesan)
     berhasil = 0
-    for chat_id in REKAP_CHAT_IDS:
+    for chat_id, thread_id in REKAP_CHAT_IDS:
+        # message_thread_id hanya dikirim kalau memang ada topic tujuan; grup
+        # non-forum dan chat pribadi menolak parameter itu.
+        extra = {"message_thread_id": thread_id} if thread_id else {}
         try:
             for teks in bagian:
-                await app.bot.send_message(chat_id, teks, parse_mode="HTML")
+                await app.bot.send_message(chat_id, teks, parse_mode="HTML",
+                                           **extra)
             berhasil += 1
         except Exception:
-            logger.exception("Gagal mengirim rekap harian ke chat %s", chat_id)
+            logger.exception("Gagal mengirim rekap harian ke chat %s (topic %s)",
+                             chat_id, thread_id)
 
     logger.info("Rekap harian %s terkirim ke %s dari %s chat",
                 tanggal, berhasil, len(REKAP_CHAT_IDS))
